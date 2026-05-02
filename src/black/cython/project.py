@@ -106,6 +106,50 @@ class SurrogateProjector:
     def _project_PassStatNode(self, node: Node, *, indent: int) -> str:
         return f"{_INDENT * indent}pass\n"
 
+    def _project_CImportStatNode(self, node: Node, *, indent: int) -> str:
+        module_name = getattr(node, "module_name", None)
+        if not module_name:
+            raise ProjectionError("Unsupported cimport statement without a module name.")
+        as_name = getattr(node, "as_name", None)
+        surrogate = f"import {module_name}"
+        original = f"cimport {module_name}"
+        if as_name:
+            surrogate += f" as {as_name}"
+            original += f" as {as_name}"
+        self._add_exact_replacement(surrogate, original)
+        return f"{_INDENT * indent}{surrogate}\n"
+
+    def _project_FromCImportStatNode(self, node: Node, *, indent: int) -> str:
+        module_name = getattr(node, "module_name", None)
+        if not module_name:
+            raise ProjectionError("Unsupported from-cimport statement without a module name.")
+        imported_items: list[str] = []
+        for _pos, name, as_name in getattr(node, "imported_names", None) or []:
+            imported_items.append(name if as_name is None else f"{name} as {as_name}")
+        if not imported_items:
+            raise ProjectionError("Unsupported empty from-cimport statement.")
+        imported = ", ".join(imported_items)
+        surrogate = f"from {module_name} import {imported}"
+        original = f"from {module_name} cimport {imported}"
+        self._add_exact_replacement(surrogate, original)
+        return f"{_INDENT * indent}{surrogate}\n"
+
+    def _project_CVarDefNode(self, node: Node, *, indent: int) -> str:
+        declarators = getattr(node, "declarators", None) or []
+        if len(declarators) != 1:
+            raise ProjectionError(
+                "Only single-declarator cdef variable statements are supported yet."
+            )
+        declarator = declarators[0]
+        decl_token = self._make_value_token(self._project_c_var_header(node, declarator))
+        default = getattr(declarator, "default", None)
+        if default is None:
+            return f"{_INDENT * indent}{decl_token}\n"
+        return (
+            f"{_INDENT * indent}{decl_token} = "
+            f"{self._project_expr(default)}\n"
+        )
+
     def _project_ExprStatNode(self, node: Node, *, indent: int) -> str:
         return f"{_INDENT * indent}{self._project_expr(node.expr)}\n"
 
@@ -119,6 +163,14 @@ class SurrogateProjector:
         if node.value is None:
             return f"{_INDENT * indent}return\n"
         return f"{_INDENT * indent}return {self._project_expr(node.value)}\n"
+
+    def _project_InPlaceAssignmentNode(self, node: Node, *, indent: int) -> str:
+        operator = getattr(node, "operator", "")
+        op_text = operator if str(operator).endswith("=") else f"{operator}="
+        return (
+            f"{_INDENT * indent}{self._project_expr(node.lhs)} {op_text} "
+            f"{self._project_expr(node.rhs)}\n"
+        )
 
     def _project_IfStatNode(self, node: Node, *, indent: int) -> str:
         parts: list[str] = []
@@ -134,10 +186,28 @@ class SurrogateProjector:
             parts.append(self._project_block(node.else_clause, indent=indent + 1))
         return "".join(parts)
 
+    def _project_ForInStatNode(self, node: Node, *, indent: int) -> str:
+        if getattr(node, "is_async", False):
+            raise ProjectionError("Async for loops are not supported yet.")
+        iterator = getattr(node, "iterator", None)
+        sequence = getattr(iterator, "sequence", None)
+        if sequence is None:
+            raise ProjectionError("Unsupported Cython for-loop iterator.")
+        parts = [
+            f"{_INDENT * indent}for {self._project_expr(node.target)} in "
+            f"{self._project_expr(sequence)}:\n",
+            self._project_block(node.body, indent=indent + 1),
+        ]
+        if node.else_clause is not None:
+            parts.append(f"{_INDENT * indent}else:\n")
+            parts.append(self._project_block(node.else_clause, indent=indent + 1))
+        return "".join(parts)
+
     def _project_DefNode(self, node: Node, *, indent: int) -> str:
         args = self._project_py_args(getattr(node, "args", None))
-        return (
+        return self._emit_compound_statement(
             f"{_INDENT * indent}def {node.name}({args}):\n"
+            f"{self._project_docstring(getattr(node, 'doc', None), indent=indent + 1)}"
             f"{self._project_block(node.body, indent=indent + 1)}"
         )
 
@@ -163,8 +233,9 @@ class SurrogateProjector:
         args = ", ".join(
             self._project_c_arg(arg) for arg in getattr(declarator, "args", None) or []
         )
-        return (
+        return self._emit_compound_statement(
             f"{_INDENT * indent}def {header_token}({args}):\n"
+            f"{self._project_docstring(getattr(node, 'doc', None), indent=indent + 1)}"
             f"{self._project_block(node.body, indent=indent + 1)}"
         )
 
@@ -184,19 +255,54 @@ class SurrogateProjector:
         parts.append(name)
         return " ".join(parts)
 
-    def _project_py_args(self, args: Node | None) -> str:
+    def _project_CClassDefNode(self, node: Node, *, indent: int) -> str:
+        bases = getattr(node, "bases", None)
+        base_args = getattr(bases, "args", None) if bases is not None else None
+        if base_args:
+            raise ProjectionError("cdef class bases are not supported yet.")
+        header = self._project_c_class_header(node)
+        header_token = self._make_class_header_token(header)
+        return self._emit_compound_statement(
+            f"{_INDENT * indent}class {header_token}:\n"
+            f"{self._project_docstring(getattr(node, 'doc', None), indent=indent + 1)}"
+            f"{self._project_block(node.body, indent=indent + 1)}"
+        )
+
+    def _project_c_class_header(self, node: Node) -> str:
+        parts = ["cdef class", getattr(node, "class_name", "")]
+        if not parts[-1]:
+            raise ProjectionError("Unable to determine the Cython class name.")
+        return " ".join(parts)
+
+    def _project_py_args(self, args: Node | list[Node] | None) -> str:
         if args is None:
             return ""
+        if isinstance(args, list):
+            arg_nodes = args
+        else:
+            arg_nodes = getattr(args, "args", None) or []
         items: list[str] = []
-        for arg in getattr(args, "args", None) or []:
+        for arg in arg_nodes:
             items.append(self._project_py_arg(arg))
         return ", ".join(items)
 
     def _project_py_arg(self, arg: Node) -> str:
         name = getattr(arg, "name", None)
         if not isinstance(name, str):
+            declarator = getattr(arg, "declarator", None)
+            name = self._format_c_declarator(declarator)
+        if not isinstance(name, str) or not name:
             raise ProjectionError(f"Unsupported Python argument node: {arg!r}")
-        text = name
+        text = self._make_value_token(
+            " ".join(
+                part
+                for part in (
+                    self._format_c_base_type(getattr(arg, "base_type", None)),
+                    name,
+                )
+                if part
+            )
+        ) if getattr(arg, "base_type", None) is not None else name
         annotation = getattr(arg, "annotation", None)
         if annotation is not None:
             text = f"{text}: {self._project_expr(annotation)}"
@@ -231,6 +337,13 @@ class SurrogateProjector:
 
     def _make_header_token(self, value: str) -> str:
         prefix = "def "
+        return self._make_prefixed_token(prefix, value)
+
+    def _make_class_header_token(self, value: str) -> str:
+        prefix = "class "
+        return self._make_prefixed_token(prefix, value)
+
+    def _make_prefixed_token(self, prefix: str, value: str) -> str:
         token_length = len(value) - len(prefix)
         if token_length < 1:
             raise ProjectionError(f"Cannot project Cython header: {value!r}")
@@ -242,6 +355,33 @@ class SurrogateProjector:
         token = self._factory.make(len(value))
         self._replacements.append(Replacement(token, value))
         return token
+
+    def _add_exact_replacement(self, surrogate: str, original: str) -> None:
+        self._replacements.append(Replacement(surrogate, original))
+
+    def _emit_compound_statement(self, text: str) -> str:
+        return text
+
+    def _project_docstring(self, doc: str | None, *, indent: int) -> str:
+        if not doc:
+            return ""
+        return f"{_INDENT * indent}{doc!r}\n"
+
+    def _project_c_var_header(self, node: Node, declarator: object) -> str:
+        parts = ["cdef"]
+        visibility = getattr(node, "visibility", None)
+        if visibility and visibility != "private":
+            parts.append(visibility)
+        if getattr(node, "api", False):
+            parts.append("api")
+        base_type = self._format_c_base_type(getattr(node, "base_type", None))
+        if base_type:
+            parts.append(base_type)
+        name = self._format_c_declarator(declarator)
+        if not name:
+            raise ProjectionError("Unable to determine the Cython variable name.")
+        parts.append(name)
+        return " ".join(parts)
 
     def _project_expr(self, node: Node) -> str:
         method = getattr(self, f"_expr_{type(node).__name__}", None)
@@ -272,11 +412,21 @@ class SurrogateProjector:
             raise ProjectionError(f"Unexpected StringNode value: {value!r}")
         return repr(value)
 
+    def _expr_TupleNode(self, node: Node) -> str:
+        items = [self._project_expr(arg) for arg in getattr(node, "args", None) or []]
+        if len(items) == 1:
+            return f"({items[0]},)"
+        return f"({', '.join(items)})"
+
     def _expr_AttributeNode(self, node: Node) -> str:
         return f"{self._project_expr(node.obj)}.{node.attribute}"
 
     def _expr_IndexNode(self, node: Node) -> str:
         return f"{self._project_expr(node.base)}[{self._project_expr(node.index)}]"
+
+    def _expr_SimpleCallNode(self, node: Node) -> str:
+        args = ", ".join(self._project_expr(arg) for arg in getattr(node, "args", None) or [])
+        return f"{self._project_expr(node.function)}({args})"
 
     def _expr_PrimaryCmpNode(self, node: Node) -> str:
         return (

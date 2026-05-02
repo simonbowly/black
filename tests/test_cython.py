@@ -48,6 +48,125 @@ def test_cython_mode_reuses_black_formatter() -> None:
     assert actual == inflate_source(formatted_surrogate, projected.replacements)
 
 
+def test_formats_cyblack_base_subset() -> None:
+    source = """\
+cdef double pi=3.14159265358979
+
+cdef double circle_area(double r):
+    \"\"\"Return the area of a circle with radius r.\"\"\"
+    cdef double area
+    area=pi*r*r
+    return area
+
+cdef int factorial(int n):
+    \"\"\"Return n! iteratively.\"\"\"
+    cdef int result=1
+    cdef int i
+    for i in range(2,n+1):
+        result*=i
+        i=i
+    return result
+
+def summarise(double r,int n):
+    \"\"\"Print a short summary.\"\"\"
+    cdef double a
+    a=circle_area(r)
+    return (a,factorial(n))
+"""
+    expected = """\
+cdef double pi = 3.14159265358979
+
+
+cdef double circle_area(double r):
+    "Return the area of a circle with radius r."
+    cdef double area
+    area = pi * r * r
+    return area
+
+
+cdef int factorial(int n):
+    "Return n! iteratively."
+    cdef int result = 1
+    cdef int i
+    for i in range(2, n + 1):
+        result *= i
+        i = i
+    return result
+
+
+def summarise(double r, int n):
+    "Print a short summary."
+    cdef double a
+    a = circle_area(r)
+    return (a, factorial(n))
+"""
+
+    actual = black.format_str(source, mode=CYTHON_MODE)
+
+    assert actual == expected
+    black.assert_cython_equivalent(source, actual)
+
+
+def test_formats_cdef_class_sample() -> None:
+    source = """\
+cpdef int calculate_sum(int a,int b):
+    return a+b
+
+cpdef double calculate_average(list numbers):
+    return sum(numbers)/len(numbers)
+
+cpdef bint is_even(int number):
+    return number%2==0
+
+cdef class Calculator:
+    cpdef int multiply(self,int a,int b):
+        return a*b
+"""
+    expected = """\
+cpdef int calculate_sum(int a, int b):
+    return a + b
+
+
+cpdef double calculate_average(list numbers):
+    return sum(numbers) / len(numbers)
+
+
+cpdef bint is_even(int number):
+    return number % 2 == 0
+
+
+cdef class Calculator:
+    cpdef int multiply(self, int a, int b):
+        return a * b
+"""
+
+    actual = black.format_str(source, mode=CYTHON_MODE)
+
+    assert actual == expected
+    black.assert_cython_equivalent(source, actual)
+
+
+def test_formats_simple_cimport_call() -> None:
+    source = """\
+from libc.math cimport sqrt
+
+cpdef double norm(double x):
+    return sqrt(x*x+1.0)
+"""
+    expected = """\
+from libc.math cimport sqrt
+
+
+cpdef double norm(double x):
+    return sqrt(x * x + 1.0)
+"""
+
+    actual = black.format_str(source, mode=CYTHON_MODE)
+
+    assert actual == expected
+    black.assert_cython_equivalent(source, actual)
+
+
 def test_single_file_force_cython(tmp_path: Path) -> None:
     path = tmp_path / "file.py"
     path.write_text("cdef int func(int x,int y=1):\n    return x+y\n", encoding="utf-8")

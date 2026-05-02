@@ -1302,7 +1302,6 @@ def _format_str_once(
         if not cython_dependencies_are_installed(warn=False):
             raise ValueError(cython_dependency_error_message())
         from black.cython.formatter import (
-            EquivalenceError as CythonEquivalenceError,
             FormatError as CythonFormatError,
             format_source as format_cython_source,
         )
@@ -1310,13 +1309,17 @@ def _format_str_once(
         if lines:
             raise ValueError("Cannot use --line-ranges with Cython files.")
         try:
-            return format_cython_source(normalized_contents, check=False).replace(
+            return format_cython_source(
+                normalized_contents,
+                mode=mode,
+                python_formatter=lambda text, surrogate_mode: format_str(
+                    text, mode=surrogate_mode
+                ),
+            ).replace(
                 "\n", newline_type
             )
         except CythonFormatError as exc:
             raise InvalidInput(str(exc)) from None
-        except CythonEquivalenceError as exc:
-            raise ASTSafetyError(str(exc)) from None
 
     src_node = lib2to3_parse(
         normalized_contents.lstrip(), target_versions=mode.target_versions

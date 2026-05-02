@@ -5,6 +5,8 @@ from click.testing import CliRunner
 
 import black
 import black.handle_cython as handle_cython
+from black.cython.inflate import inflate_source
+from black.cython.project import project_source
 from tests.util import DEFAULT_MODE
 
 EMPTY_CONFIG = Path(__file__).parent / "data" / "empty_pyproject.toml"
@@ -25,6 +27,25 @@ def test_format_str_cython_basic() -> None:
     assert actual == expected
     black.assert_cython_equivalent(source, actual)
     black.assert_stable(source, actual, CYTHON_MODE)
+
+
+def test_cython_mode_reuses_black_formatter() -> None:
+    source = (
+        "cdef int some_long_function_name("
+        "int some_long_argument_name,int another_long_argument_name=1):\n"
+        "    return some_long_argument_name+another_long_argument_name\n"
+    )
+    cython_mode = replace(CYTHON_MODE, line_length=40)
+
+    projected = project_source(source)
+    formatted_surrogate = black.format_str(
+        projected.surrogate,
+        mode=replace(DEFAULT_MODE, line_length=40),
+    )
+
+    actual = black.format_str(source, mode=cython_mode)
+
+    assert actual == inflate_source(formatted_surrogate, projected.replacements)
 
 
 def test_single_file_force_cython(tmp_path: Path) -> None:

@@ -167,6 +167,87 @@ cpdef double norm(double x):
     black.assert_cython_equivalent(source, actual)
 
 
+def test_formats_decorator_and_memoryview_sample() -> None:
+    source = """\
+import cython
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def fast_sum(double[:] arr):
+    cdef double total=0.0
+    cdef int i
+    for i in range(arr.shape[0]):
+        total+=arr[i]
+    return total
+
+@cython.cdivision(True)
+def divide_ints(int a,int b):
+    return a/b
+
+@cython.inline
+cdef int square(int x):
+    return x*x
+"""
+    expected = """\
+import cython
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def fast_sum(double[:] arr):
+    cdef double total = 0.0
+    cdef int i
+    for i in range(arr.shape[0]):
+        total += arr[i]
+    return total
+
+
+@cython.cdivision(True)
+def divide_ints(int a, int b):
+    return a / b
+
+
+@cython.inline
+cdef int square(int x):
+    return x * x
+"""
+
+    actual = black.format_str(source, mode=CYTHON_MODE)
+
+    assert actual == expected
+    black.assert_cython_equivalent(source, actual)
+
+
+def test_formats_cdef_class_fields_sample() -> None:
+    source = """\
+cdef class Point:
+    cdef public double x,y
+
+    def __init__(self,double x,double y):
+        self.x=x
+        self.y=y
+
+    cdef double distance_from_origin(self):
+        return (self.x**2+self.y**2)**0.5
+"""
+    expected = """\
+cdef class Point:
+    cdef public double x, y
+
+    def __init__(self, double x, double y):
+        self.x = x
+        self.y = y
+
+    cdef double distance_from_origin(self):
+        return (self.x**2 + self.y**2) ** 0.5
+"""
+
+    actual = black.format_str(source, mode=CYTHON_MODE)
+
+    assert actual == expected
+    black.assert_cython_equivalent(source, actual)
+
+
 def test_single_file_force_cython(tmp_path: Path) -> None:
     path = tmp_path / "file.py"
     path.write_text("cdef int func(int x,int y=1):\n    return x+y\n", encoding="utf-8")

@@ -106,8 +106,21 @@ class SurrogateProjector:
     def _project_PassStatNode(self, node: Node, *, indent: int) -> str:
         return f"{_INDENT * indent}pass\n"
 
+    def _project_FromImportStatNode(self, node: Node, *, indent: int) -> str:
+        module = (
+            self._format_import_module_name(getattr(node.module, "module_name", None))
+            if getattr(node, "module", None)
+            else ""
+        )
+        items: list[str] = []
+        for name, name_node in getattr(node, "items", None) or []:
+            items.append(name if name == name_node.name else f"{name} as {name_node.name}")
+        if not items:
+            raise ProjectionError("Unsupported empty from-import statement.")
+        return f"{_INDENT * indent}from {module} import {', '.join(items)}\n"
+
     def _project_CImportStatNode(self, node: Node, *, indent: int) -> str:
-        module_name = getattr(node, "module_name", None)
+        module_name = self._format_import_module_name(getattr(node, "module_name", None))
         if not module_name:
             raise ProjectionError("Unsupported cimport statement without a module name.")
         as_name = getattr(node, "as_name", None)
@@ -120,7 +133,7 @@ class SurrogateProjector:
         return f"{_INDENT * indent}{surrogate}\n"
 
     def _project_FromCImportStatNode(self, node: Node, *, indent: int) -> str:
-        module_name = getattr(node, "module_name", None)
+        module_name = self._format_import_module_name(getattr(node, "module_name", None))
         if not module_name:
             raise ProjectionError("Unsupported from-cimport statement without a module name.")
         imported_items: list[str] = []
@@ -136,10 +149,10 @@ class SurrogateProjector:
 
     def _project_CVarDefNode(self, node: Node, *, indent: int) -> str:
         declarators = getattr(node, "declarators", None) or []
-        if len(declarators) != 1:
-            raise ProjectionError(
-                "Only single-declarator cdef variable statements are supported yet."
-            )
+        if not declarators:
+            raise ProjectionError("Unsupported empty cdef variable statement.")
+        if len(declarators) > 1:
+            return self._project_multi_cvar_def(node, declarators, indent=indent)
         declarator = declarators[0]
         decl_token = self._make_value_token(self._project_c_var_header(node, declarator))
         default = getattr(declarator, "default", None)
@@ -154,6 +167,9 @@ class SurrogateProjector:
         return f"{_INDENT * indent}{self._project_expr(node.expr)}\n"
 
     def _project_SingleAssignmentNode(self, node: Node, *, indent: int) -> str:
+        import_rhs = self._project_import_assignment(node, indent=indent)
+        if import_rhs is not None:
+            return import_rhs
         return (
             f"{_INDENT * indent}{self._project_expr(node.lhs)} = "
             f"{self._project_expr(node.rhs)}\n"
@@ -206,6 +222,7 @@ class SurrogateProjector:
     def _project_DefNode(self, node: Node, *, indent: int) -> str:
         args = self._project_py_args(getattr(node, "args", None))
         return self._emit_compound_statement(
+            f"{self._project_decorators(getattr(node, 'decorators', None), indent=indent)}"
             f"{_INDENT * indent}def {node.name}({args}):\n"
             f"{self._project_docstring(getattr(node, 'doc', None), indent=indent + 1)}"
             f"{self._project_block(node.body, indent=indent + 1)}"
@@ -223,8 +240,6 @@ class SurrogateProjector:
             raise ProjectionError(
                 "Exception clauses are not supported by the adapter yet."
             )
-        if getattr(node, "decorators", None):
-            raise ProjectionError("Decorated Cython functions are not supported yet.")
         if getattr(node, "py_func_stat", None) is not None:
             raise ProjectionError("cpdef helper nodes are not supported yet.")
 
@@ -234,6 +249,7 @@ class SurrogateProjector:
             self._project_c_arg(arg) for arg in getattr(declarator, "args", None) or []
         )
         return self._emit_compound_statement(
+            f"{self._project_decorators(getattr(node, 'decorators', None), indent=indent)}"
             f"{_INDENT * indent}def {header_token}({args}):\n"
             f"{self._project_docstring(getattr(node, 'doc', None), indent=indent + 1)}"
             f"{self._project_block(node.body, indent=indent + 1)}"
@@ -362,12 +378,59 @@ class SurrogateProjector:
     def _emit_compound_statement(self, text: str) -> str:
         return text
 
+    def _project_decorators(self, decorators: list[Node] | None, *, indent: int) -> str:
+        if not decorators:
+            return ""
+        lines: list[str] = []
+        for decorator in decorators:
+            target = getattr(decorator, "decorator", None)
+            if target is None:
+                raise ProjectionError(f"Unsupported decorator node: {decorator!r}")
+            lines.append(f"{_INDENT * indent}@{self._project_expr(target)}\n")
+        return "".join(lines)
+
     def _project_docstring(self, doc: str | None, *, indent: int) -> str:
         if not doc:
             return ""
         return f"{_INDENT * indent}{doc!r}\n"
 
+    def _project_import_assignment(self, node: Node, *, indent: int) -> str | None:
+        rhs = getattr(node, "rhs", None)
+        if type(rhs).__name__ != "ImportNode":
+            return None
+        module_name = self._format_import_module_name(getattr(rhs, "module_name", None))
+        if not module_name:
+            raise ProjectionError("Unsupported import expression without a module name.")
+        lhs_name = getattr(getattr(node, "lhs", None), "name", None)
+        line = f"import {module_name}"
+        if lhs_name and lhs_name != module_name:
+            line += f" as {lhs_name}"
+        return f"{_INDENT * indent}{line}\n"
+
     def _project_c_var_header(self, node: Node, declarator: object) -> str:
+        parts = self._c_var_prefix_parts(node)
+        name = self._format_c_declarator(declarator)
+        if not name:
+            raise ProjectionError("Unable to determine the Cython variable name.")
+        parts.append(name)
+        return " ".join(parts)
+
+    def _project_multi_cvar_def(
+        self, node: Node, declarators: list[object], *, indent: int
+    ) -> str:
+        if any(getattr(declarator, "default", None) is not None for declarator in declarators):
+            raise ProjectionError(
+                "Multi-declarator cdef statements with defaults are not supported yet."
+            )
+        names = [self._format_c_declarator(declarator) for declarator in declarators]
+        if not all(names):
+            raise ProjectionError("Unable to determine all Cython variable names.")
+        surrogate = ", ".join(self._make_value_token(name) for name in names)
+        original = " ".join(self._c_var_prefix_parts(node)) + " " + ", ".join(names)
+        self._add_exact_replacement(surrogate, original)
+        return f"{_INDENT * indent}{surrogate}\n"
+
+    def _c_var_prefix_parts(self, node: Node) -> list[str]:
         parts = ["cdef"]
         visibility = getattr(node, "visibility", None)
         if visibility and visibility != "private":
@@ -377,11 +440,7 @@ class SurrogateProjector:
         base_type = self._format_c_base_type(getattr(node, "base_type", None))
         if base_type:
             parts.append(base_type)
-        name = self._format_c_declarator(declarator)
-        if not name:
-            raise ProjectionError("Unable to determine the Cython variable name.")
-        parts.append(name)
-        return " ".join(parts)
+        return parts
 
     def _project_expr(self, node: Node) -> str:
         method = getattr(self, f"_expr_{type(node).__name__}", None)
@@ -412,6 +471,12 @@ class SurrogateProjector:
             raise ProjectionError(f"Unexpected StringNode value: {value!r}")
         return repr(value)
 
+    def _expr_ImportNode(self, node: Node) -> str:
+        module_name = self._format_import_module_name(getattr(node, "module_name", None))
+        if not module_name:
+            raise ProjectionError("Unsupported import expression without a module name.")
+        return f"import {module_name}"
+
     def _expr_TupleNode(self, node: Node) -> str:
         items = [self._project_expr(arg) for arg in getattr(node, "args", None) or []]
         if len(items) == 1:
@@ -430,37 +495,66 @@ class SurrogateProjector:
 
     def _expr_PrimaryCmpNode(self, node: Node) -> str:
         return (
-            f"{self._project_expr(node.operand1)} {node.operator} "
-            f"{self._project_expr(node.operand2)}"
+            f"{self._project_operand(node.operand1, parent_prec=10, side='left', operator=node.operator)} "
+            f"{node.operator} "
+            f"{self._project_operand(node.operand2, parent_prec=10, side='right', operator=node.operator)}"
         )
 
     def _expr_AddNode(self, node: Node) -> str:
-        return self._project_binary(node, "+")
+        return self._project_binary(node, "+", precedence=20)
 
     def _expr_SubNode(self, node: Node) -> str:
-        return self._project_binary(node, "-")
+        return self._project_binary(node, "-", precedence=20)
 
     def _expr_MulNode(self, node: Node) -> str:
-        return self._project_binary(node, "*")
+        return self._project_binary(node, "*", precedence=30)
 
     def _expr_DivNode(self, node: Node) -> str:
-        return self._project_binary(node, "/")
+        return self._project_binary(node, "/", precedence=30)
 
     def _expr_ModNode(self, node: Node) -> str:
-        return self._project_binary(node, "%")
+        return self._project_binary(node, "%", precedence=30)
 
     def _expr_PowNode(self, node: Node) -> str:
-        return self._project_binary(node, "**")
+        return self._project_binary(node, "**", precedence=40)
 
-    def _project_binary(self, node: Node, operator: str) -> str:
+    def _project_binary(self, node: Node, operator: str, *, precedence: int) -> str:
         return (
-            f"{self._project_expr(node.operand1)} {operator} "
-            f"{self._project_expr(node.operand2)}"
+            f"{self._project_operand(node.operand1, parent_prec=precedence, side='left', operator=operator)} "
+            f"{operator} "
+            f"{self._project_operand(node.operand2, parent_prec=precedence, side='right', operator=operator)}"
         )
+
+    def _project_operand(
+        self, node: Node, *, parent_prec: int, side: str, operator: str
+    ) -> str:
+        rendered = self._project_expr(node)
+        child_prec = self._expr_precedence(node)
+        if child_prec < parent_prec:
+            return f"({rendered})"
+        if child_prec == parent_prec:
+            if operator == "**" and side == "left":
+                return f"({rendered})"
+            if operator != "**" and side == "right":
+                return f"({rendered})"
+        return rendered
+
+    def _expr_precedence(self, node: Node) -> int:
+        return {
+            "PrimaryCmpNode": 10,
+            "AddNode": 20,
+            "SubNode": 20,
+            "MulNode": 30,
+            "DivNode": 30,
+            "ModNode": 30,
+            "PowNode": 40,
+        }.get(type(node).__name__, 100)
 
     def _format_c_base_type(self, base_type: BaseType | None) -> str:
         if base_type is None:
             return ""
+        if type(base_type).__name__ == "MemoryViewSliceTypeNode":
+            return self._format_memoryview_slice_type(base_type)
         name = getattr(base_type, "name", None)
         if isinstance(name, str) and name:
             return name
@@ -468,7 +562,47 @@ class SurrogateProjector:
         if callable(declaration_code):
             rendered = declaration_code("", for_display=1)
             return rendered.strip()
+        if (
+            getattr(base_type, "is_basic_c_type", None) is False
+            and getattr(base_type, "name", None) is None
+            and getattr(base_type, "module_path", None) == []
+            and getattr(base_type, "templates", None) is None
+        ):
+            return ""
         return str(base_type).strip()
+
+    def _format_memoryview_slice_type(self, node: object) -> str:
+        base = self._format_c_base_type(getattr(node, "base_type_node", None))
+        axes = getattr(node, "axes", None) or []
+        if not base or not axes:
+            raise ProjectionError("Unsupported memoryview type declaration.")
+        rendered_axes = [self._format_memoryview_axis(axis) for axis in axes]
+        return f"{base}[{', '.join(rendered_axes)}]"
+
+    def _format_memoryview_axis(self, axis: object) -> str:
+        if type(axis).__name__ != "SliceNode":
+            raise ProjectionError("Unsupported memoryview axis specification.")
+        start = self._format_slice_bound(getattr(axis, "start", None))
+        stop = self._format_slice_bound(getattr(axis, "stop", None))
+        step = self._format_slice_bound(getattr(axis, "step", None))
+        if step:
+            return f"{start}:{stop}:{step}"
+        return f"{start}:{stop}"
+
+    def _format_slice_bound(self, value: object) -> str:
+        if value is None or type(value).__name__ == "NoneNode":
+            return ""
+        if not hasattr(value, "__dict__"):
+            raise ProjectionError("Unsupported memoryview slice bound.")
+        return self._project_expr(value)
+
+    def _format_import_module_name(self, module_name: object) -> str:
+        if isinstance(module_name, str):
+            return module_name
+        value = getattr(module_name, "value", None)
+        if isinstance(value, str):
+            return value
+        return str(module_name) if module_name is not None else ""
 
     def _format_c_declarator(self, declarator: object) -> str:
         if declarator is None:

@@ -250,6 +250,7 @@ class Mode:
     string_normalization: bool = True
     is_pyi: bool = False
     is_ipynb: bool = False
+    is_cython: bool = False
     skip_source_first_line: bool = False
     magic_trailing_comma: bool = True
     python_cell_magics: set[str] = field(default_factory=set)
@@ -297,6 +298,7 @@ class Mode:
             str(int(self.string_normalization)),
             str(int(self.is_pyi)),
             str(int(self.is_ipynb)),
+            str(int(self.is_cython)),
             str(int(self.skip_source_first_line)),
             str(int(self.magic_trailing_comma)),
             str(int(self.preview)),
@@ -312,6 +314,7 @@ class Mode:
             self.string_normalization,
             self.is_pyi,
             self.is_ipynb,
+            self.is_cython,
             self.skip_source_first_line,
             self.magic_trailing_comma,
             frozenset(self.python_cell_magics),

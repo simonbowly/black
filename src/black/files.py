@@ -24,6 +24,10 @@ else:
     import tomli as tomllib
 
 from black.handle_ipynb_magics import jupyter_dependencies_are_installed
+from black.handle_cython import (
+    cython_dependencies_are_installed,
+    is_cython_path,
+)
 from black.mode import TargetVersion
 from black.output import err
 from black.report import Report
@@ -398,6 +402,10 @@ def gen_python_files(
 
         elif child.is_file():
             if child.suffix == ".ipynb" and not jupyter_dependencies_are_installed(
+                warn=verbose or not quiet
+            ):
+                continue
+            if is_cython_path(child) and not cython_dependencies_are_installed(
                 warn=verbose or not quiet
             ):
                 continue

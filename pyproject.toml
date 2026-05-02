@@ -71,6 +71,7 @@ uvloop = [
     "winloop>=0.5.0; sys_platform == 'win32'"
 ]
 d = ["aiohttp>=3.10"]
+cython = ["Cython>=3.2.4,<3.3"]
 jupyter = ["ipython>=7.8.0", "tokenize-rt>=3.2.0"]
 
 [dependency-groups]

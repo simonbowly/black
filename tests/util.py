@@ -21,7 +21,16 @@ from black.ranges import parse_line_ranges
 from . import conftest
 
 PYTHON_SUFFIX = ".py"
-ALLOWED_SUFFIXES = (PYTHON_SUFFIX, ".pyi", ".out", ".diff", ".ipynb")
+ALLOWED_SUFFIXES = (
+    PYTHON_SUFFIX,
+    ".pyi",
+    ".pyx",
+    ".pxd",
+    ".pxi",
+    ".out",
+    ".diff",
+    ".ipynb",
+)
 
 THIS_DIR = Path(__file__).parent
 DATA_DIR = THIS_DIR / "data"
@@ -246,6 +255,7 @@ def get_flags_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--pyi", default=False, action="store_true")
     parser.add_argument("--ipynb", default=False, action="store_true")
+    parser.add_argument("--cython", default=False, action="store_true")
     parser.add_argument(
         "--skip-magic-trailing-comma", default=False, action="store_true"
     )
@@ -286,6 +296,7 @@ def parse_mode(flags_line: str) -> TestCaseArgs:
         string_normalization=not args.skip_string_normalization,
         is_pyi=args.pyi,
         is_ipynb=args.ipynb,
+        is_cython=args.cython,
         magic_trailing_comma=not args.skip_magic_trailing_comma,
         preview=args.preview,
         unstable=args.unstable,

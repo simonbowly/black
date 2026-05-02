@@ -47,6 +47,11 @@ from black.files import (
     resolves_outside_root_or_cannot_stat,
     wrap_stream_for_windows,
 )
+from black.handle_cython import (
+    cython_dependencies_are_installed,
+    cython_dependency_error_message,
+    is_cython_path,
+)
 from black.handle_ipynb_magics import (
     PYTHON_CELL_MAGICS,
     jupyter_dependencies_are_installed,
@@ -294,6 +299,14 @@ def validate_regex(
     help=(
         "Format all input files like Jupyter Notebooks regardless of file extension."
         " This is useful when piping source on standard input."
+    ),
+)
+@click.option(
+    "--cython",
+    is_flag=True,
+    help=(
+        "Format all input files like Cython source regardless of file extension. "
+        "This is useful when piping source on standard input."
     ),
 )
 @click.option(
@@ -546,6 +559,7 @@ def main(
     fast: bool,
     pyi: bool,
     ipynb: bool,
+    cython: bool,
     python_cell_magics: Sequence[str],
     skip_source_first_line: bool,
     skip_string_normalization: bool,
@@ -642,6 +656,12 @@ def main(
     if ipynb and pyi:
         err("Cannot pass both `pyi` and `ipynb` flags!")
         ctx.exit(1)
+    if cython and pyi:
+        err("Cannot pass both `pyi` and `cython` flags!")
+        ctx.exit(1)
+    if cython and ipynb:
+        err("Cannot pass both `ipynb` and `cython` flags!")
+        ctx.exit(1)
 
     write_back = WriteBack.from_configuration(check=check, diff=diff, color=color)
     if target_version:
@@ -654,6 +674,7 @@ def main(
         line_length=line_length,
         is_pyi=pyi,
         is_ipynb=ipynb,
+        is_cython=cython,
         skip_source_first_line=skip_source_first_line,
         string_normalization=not skip_string_normalization,
         magic_trailing_comma=not skip_magic_trailing_comma,
@@ -675,6 +696,9 @@ def main(
     if line_ranges:
         if ipynb:
             err("Cannot use --line-ranges with ipynb files.")
+            ctx.exit(1)
+        if cython:
+            err("Cannot use --line-ranges with Cython files.")
             ctx.exit(1)
 
         try:
@@ -819,6 +843,10 @@ def get_sources(
                 warn=verbose or not quiet
             ):
                 continue
+            if is_cython_path(path) and not cython_dependencies_are_installed(
+                warn=verbose or not quiet
+            ):
+                continue
 
             if verbose:
                 out(f'Found input source: "{path}"', fg="blue")
@@ -923,6 +951,8 @@ def reformat_one(
                 mode = replace(mode, is_pyi=True)
             elif src.suffix == ".ipynb":
                 mode = replace(mode, is_ipynb=True)
+            elif is_cython_path(src):
+                mode = replace(mode, is_cython=True)
             if format_stdin_to_stdout(
                 fast=fast, write_back=write_back, mode=mode, lines=lines
             ):
@@ -970,6 +1000,8 @@ def format_file_in_place(
         mode = replace(mode, is_pyi=True)
     elif src.suffix == ".ipynb":
         mode = replace(mode, is_ipynb=True)
+    elif is_cython_path(src):
+        mode = replace(mode, is_cython=True)
 
     then = datetime.fromtimestamp(src.stat().st_mtime, timezone.utc)
     header = b""
@@ -1085,9 +1117,12 @@ def check_stability_and_equivalence(
     content differently.
     """
     try:
-        assert_equivalent(src_contents, dst_contents)
+        if mode.is_cython:
+            assert_cython_equivalent(src_contents, dst_contents)
+        else:
+            assert_equivalent(src_contents, dst_contents)
     except ASTSafetyError:
-        if _target_versions_exceed_runtime(mode.target_versions):
+        if not mode.is_cython and _target_versions_exceed_runtime(mode.target_versions):
             raise ASTSafetyError(
                 "failed to verify equivalence of the formatted output:"
                 f" {_version_mismatch_message(mode.target_versions)}"
@@ -1112,6 +1147,8 @@ def format_file_contents(
     if mode.is_ipynb:
         dst_contents = format_ipynb_string(src_contents, fast=fast, mode=mode)
     else:
+        if mode.is_cython and lines:
+            raise ValueError("Cannot use --line-ranges with Cython files.")
         dst_contents = format_str(src_contents, mode=mode, lines=lines)
     if src_contents == dst_contents:
         raise NothingChanged
@@ -1260,6 +1297,26 @@ def _format_str_once(
     normalized_contents, _, newline_type = decode_bytes(
         src_contents.encode("utf-8"), mode, encoding_overwrite="utf-8"
     )
+
+    if mode.is_cython:
+        if not cython_dependencies_are_installed(warn=False):
+            raise ValueError(cython_dependency_error_message())
+        from black.cython.formatter import (
+            EquivalenceError as CythonEquivalenceError,
+            FormatError as CythonFormatError,
+            format_source as format_cython_source,
+        )
+
+        if lines:
+            raise ValueError("Cannot use --line-ranges with Cython files.")
+        try:
+            return format_cython_source(normalized_contents, check=False).replace(
+                "\n", newline_type
+            )
+        except CythonFormatError as exc:
+            raise InvalidInput(str(exc)) from None
+        except CythonEquivalenceError as exc:
+            raise ASTSafetyError(str(exc)) from None
 
     src_node = lib2to3_parse(
         normalized_contents.lstrip(), target_versions=mode.target_versions
@@ -1633,6 +1690,27 @@ def assert_equivalent(src: str, dst: str) -> None:
             f"INTERNAL ERROR: {_black_info()} produced code that is not equivalent to"
             " the source.  Please report a bug on https://github.com/psf/black/issues."
             f"  This diff might be helpful: {log}"
+        ) from None
+
+
+def assert_cython_equivalent(src: str, dst: str) -> None:
+    if not cython_dependencies_are_installed(warn=False):
+        raise ASTSafetyError(cython_dependency_error_message())
+
+    from black.cython.safety import (
+        ASTCompareFailed as CythonASTCompareFailed,
+        ASTDifference as CythonASTDifference,
+        assert_equivalent as assert_cython_tree_equivalent,
+    )
+
+    try:
+        assert_cython_tree_equivalent(src, dst)
+    except (CythonASTDifference, CythonASTCompareFailed) as exc:
+        log = dump_to_file(str(exc), dst)
+        raise ASTSafetyError(
+            f"INTERNAL ERROR: {_black_info()} produced Cython code that is not equivalent"
+            " to the source. Please report a bug on https://github.com/psf/black/issues."
+            f" This diff might be helpful: {log}"
         ) from None
 
 

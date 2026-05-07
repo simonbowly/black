@@ -168,6 +168,14 @@ def test_cdef_block_formatting() -> None:
     assert _format_fixture("cdef_block") == _expected("cdef_block")
 
 
+def test_cdef_extern_formatting() -> None:
+    """cdef extern from "h": header is masked as 'class __cy_extern_NAME', body
+    declarations are handled by the bare NAME NAME handler, formatted, and
+    restored.  Phase 2 Step 11.
+    """
+    assert _format_fixture("cdef_extern") == _expected("cdef_extern")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

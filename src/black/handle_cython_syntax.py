@@ -70,7 +70,13 @@ def _tokenize_src(src: str) -> list[_tokenize.TokenInfo]:
 
 # Cython-specific NAME tokens not yet handled by the masker.
 # Updated as each Phase 2 step adds a new construct.
-_UNHANDLED_KEYWORDS: frozenset[str] = frozenset({"cdef", "cpdef", "ctypedef"})
+_UNHANDLED_KEYWORDS: frozenset[str] = frozenset({"cpdef", "ctypedef"})
+
+# Cython keywords that must not appear in the masked source after masking.
+# Any remaining occurrence means the masker encountered an unhandled construct.
+_POST_MASK_KEYWORDS: frozenset[str] = frozenset(
+    {"cdef", "cpdef", "ctypedef", "cimport"}
+)
 
 
 def validate_cython_subset(src: str) -> None:
@@ -176,6 +182,68 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 i = k
                 continue
 
+        # ---- cdef TYPE VAR [= EXPR] variable declaration ----
+        if tok.type == _tokenize.NAME and tok.string == "cdef":
+            # Classify by scanning ahead for (, :, =, 'class', or NEWLINE.
+            decl_type = "variable"
+            j = i + 1
+            while j < n:
+                t = toks[j]
+                if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER, _tokenize.COMMENT):
+                    break
+                if t.type == _tokenize.OP and t.string in ("(", ":"):
+                    decl_type = "function_or_block"
+                    break
+                if t.type == _tokenize.OP and t.string == ",":
+                    decl_type = "multi_variable"
+                    break
+                if t.type == _tokenize.OP and t.string == "=":
+                    break  # = before ( or : → simple variable with initializer
+                if t.type == _tokenize.NAME and t.string == "class":
+                    decl_type = "cdef_class"
+                    break
+                j += 1
+
+            if decl_type != "variable":
+                # Not a simple variable declaration; leave unmasked.
+                # The post-masking check will catch this as unhandled.
+                i += 1
+                continue
+
+            # Collect all NAME tokens between cdef and = (or NEWLINE).
+            name_toks: list[str] = []
+            last_name_idx = -1
+            k = i + 1
+            while k < n:
+                t = toks[k]
+                if t.type in (
+                    _tokenize.NEWLINE,
+                    _tokenize.ENDMARKER,
+                    _tokenize.COMMENT,
+                ):
+                    break
+                if t.type == _tokenize.OP and t.string == "=":
+                    break
+                if t.type == _tokenize.NAME:
+                    name_toks.append(t.string)
+                    last_name_idx = k
+                k += 1
+
+            if last_name_idx < 0 or len(name_toks) < 1:
+                # Degenerate cdef with no names; leave unmasked.
+                i += 1
+                continue
+
+            # Span: from 'cdef' through the last NAME (= var name).
+            # The initializer (= EXPR) and trailing comment stay literal.
+            span_start = _abs_start(tok, offsets)
+            span_end = _abs_end(toks[last_name_idx], offsets)
+            original_text = src[span_start:span_end]
+            ph = _placeholder(*name_toks)
+            edits.append(_Edit(span_start, span_end, ph, original_text))
+            i = k
+            continue
+
         # ---- standalone cimport X.Y [as alias] ----
         if tok.type == _tokenize.NAME and tok.string == "cimport":
             j = i + 1
@@ -201,21 +269,23 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
 
         i += 1
 
-    if not edits:
-        return src, []
-
     # Apply edits right-to-left so leftward positions are unaffected
     result = src
     for edit in reversed(edits):
         result = result[: edit.start] + edit.masked_text + result[edit.end :]
 
-    # Sanity check: no cimport keyword should remain after masking
+    # Sanity check: no Cython-specific keyword should remain after masking.
+    # Any hit means the masker encountered a construct it doesn't yet handle.
+    # This check runs even when there were no edits, so unhandled source is caught.
     for t in _tokenize_src(result):
-        if t.type == _tokenize.NAME and t.string == "cimport":
+        if t.type == _tokenize.NAME and t.string in _POST_MASK_KEYWORDS:
             raise NotImplementedError(
-                f"mask_cython: 'cimport' at line {t.start[0]} was not masked — "
-                f"parenthesized or multi-line cimport is not yet supported"
+                f"mask_cython: '{t.string}' at line {t.start[0]} was not masked — "
+                f"construct not yet supported by the masker"
             )
+
+    if not edits:
+        return src, []
 
     replacements: list[Replacement] = [
         (e.masked_text, e.original_text) for e in edits

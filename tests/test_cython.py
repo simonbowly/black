@@ -132,6 +132,13 @@ def test_typed_def_formatting() -> None:
     assert _format_fixture("typed_def") == _expected("typed_def")
 
 
+def test_memoryview_formatting() -> None:
+    """Memoryview type syntax (double[:], int[:, :]) in def/cdef args and cdef
+    variable declarations is masked, formatted, and restored.  Phase 2 Step 6.
+    """
+    assert _format_fixture("memoryview") == _expected("memoryview")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

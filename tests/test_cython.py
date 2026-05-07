@@ -153,6 +153,14 @@ def test_nogil_formatting() -> None:
     assert _format_fixture("nogil") == _expected("nogil")
 
 
+def test_cdef_struct_formatting() -> None:
+    """cdef struct/union/enum and ctypedef struct/union/enum block headers are
+    masked as 'class __cy_KEYWORD_Name:', formatted, and restored.
+    Phase 2 Step 9.
+    """
+    assert _format_fixture("cdef_struct") == _expected("cdef_struct")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

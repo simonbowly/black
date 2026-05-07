@@ -161,6 +161,13 @@ def test_cdef_struct_formatting() -> None:
     assert _format_fixture("cdef_struct") == _expected("cdef_struct")
 
 
+def test_cdef_block_formatting() -> None:
+    """cdef: compound block is masked as 'if __cy_cdef_block:', formatted, and
+    restored.  Phase 2 Step 10.
+    """
+    assert _format_fixture("cdef_block") == _expected("cdef_block")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

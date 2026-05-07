@@ -47,6 +47,11 @@ from black.files import (
     resolves_outside_root_or_cannot_stat,
     wrap_stream_for_windows,
 )
+from black.handle_cython import (
+    CYTHON_SUFFIXES,
+    cython_dependencies_are_installed,
+)
+from black.handle_cython_syntax import mask_cython, unmask_cython, validate_cython_subset
 from black.handle_ipynb_magics import (
     PYTHON_CELL_MAGICS,
     jupyter_dependencies_are_installed,
@@ -1203,6 +1208,14 @@ def format_ipynb_string(src_contents: str, *, fast: bool, mode: Mode) -> FileCon
         return dst_contents
     else:
         raise NothingChanged
+
+
+def format_cython_string(src_contents: str, *, fast: bool, mode: Mode) -> FileContent:
+    """Format Cython source file using a mask-format-restore pipeline.
+
+    Phase 1 stub: raises NotImplementedError until the pipeline is wired up.
+    """
+    raise NotImplementedError("Cython formatting pipeline not yet wired up")
 
 
 def format_str(

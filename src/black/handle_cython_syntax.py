@@ -187,29 +187,40 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             keyword = tok.string
 
             # Classify by scanning ahead for (, :, =, 'class', or NEWLINE.
+            # Track [ ] depth so colons inside memoryview slices are ignored.
             open_paren_idx = -1
             decl_type = "variable"  # default for cdef; will be overridden for cpdef
+            bracket_depth = 0
             j = i + 1
             while j < n:
                 t = toks[j]
                 if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER, _tokenize.COMMENT):
                     break
-                if t.type == _tokenize.OP and t.string == "(":
-                    open_paren_idx = j
-                    decl_type = "function"
-                    break
-                if keyword == "cdef":
-                    if t.type == _tokenize.OP and t.string == ":":
-                        decl_type = "block_header"
+                if t.type == _tokenize.OP and t.string == "[":
+                    bracket_depth += 1
+                    j += 1
+                    continue
+                if t.type == _tokenize.OP and t.string == "]":
+                    bracket_depth -= 1
+                    j += 1
+                    continue
+                if bracket_depth == 0:
+                    if t.type == _tokenize.OP and t.string == "(":
+                        open_paren_idx = j
+                        decl_type = "function"
                         break
-                    if t.type == _tokenize.OP and t.string == ",":
-                        decl_type = "multi_variable"
-                        break
-                    if t.type == _tokenize.OP and t.string == "=":
-                        break  # variable with initializer
-                    if t.type == _tokenize.NAME and t.string == "class":
-                        decl_type = "cdef_class"
-                        break
+                    if keyword == "cdef":
+                        if t.type == _tokenize.OP and t.string == ":":
+                            decl_type = "block_header"
+                            break
+                        if t.type == _tokenize.OP and t.string == ",":
+                            decl_type = "multi_variable"
+                            break
+                        if t.type == _tokenize.OP and t.string == "=":
+                            break  # variable with initializer
+                        if t.type == _tokenize.NAME and t.string == "class":
+                            decl_type = "cdef_class"
+                            break
                 j += 1
 
             # ---- function header ----
@@ -242,13 +253,25 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
                         break
 
-                    # Collect one argument slot (up to , / ) / = )
+                    # Collect one argument slot (up to , / ) / = at bracket depth 0)
                     arg_name_toks: list[str] = []
                     arg_first_idx = -1
                     arg_last_idx = -1
+                    arg_brk_depth = 0
                     k = j
                     while k < n:
                         t2 = toks[k]
+                        if t2.type == _tokenize.OP and t2.string == "[":
+                            arg_brk_depth += 1
+                            k += 1
+                            continue
+                        if t2.type == _tokenize.OP and t2.string == "]":
+                            arg_brk_depth -= 1
+                            k += 1
+                            continue
+                        if arg_brk_depth > 0:
+                            k += 1
+                            continue
                         if t2.type == _tokenize.OP and t2.string in (",", ")"):
                             break
                         if t2.type == _tokenize.OP and t2.string == "=":
@@ -382,11 +405,25 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     def_arg_toks: list[str] = []
                     def_arg_first: int = -1
                     def_arg_last: int = -1
+                    def_brk_depth = 0
                     k = j
                     while k < n:
                         t2 = toks[k]
-                        if t2.type == _tokenize.OP and t2.string in (",", ")", "=", ":"):
+                        if t2.type == _tokenize.OP and t2.string == "[":
+                            def_brk_depth += 1
+                            k += 1
+                            continue
+                        if t2.type == _tokenize.OP and t2.string == "]":
+                            def_brk_depth -= 1
+                            k += 1
+                            continue
+                        if def_brk_depth > 0:
+                            k += 1
+                            continue
+                        if t2.type == _tokenize.OP and t2.string in (",", ")", "="):
                             break
+                        if t2.type == _tokenize.OP and t2.string == ":":
+                            break  # annotation separator (a: int), not memoryview slice
                         if t2.type in (_tokenize.NL, _tokenize.COMMENT):
                             k += 1
                             continue

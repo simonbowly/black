@@ -7,11 +7,12 @@ only run when --run-optional=cython is passed.  Cython must be installed.
 import pathlib
 import textwrap
 from dataclasses import replace
+from unittest.mock import patch
 
 import pytest
 
 import black
-from black import Mode, NothingChanged, format_cython_string, format_file_contents, format_str
+from black import Mode, NothingChanged, format_cython_string, format_str
 from black.handle_cython import cython_dependencies_are_installed
 
 pytestmark = pytest.mark.cython
@@ -85,17 +86,18 @@ DATA_DIR = pathlib.Path(__file__).parent / "data" / "cython"
 
 
 def _format_fixture(name: str) -> str:
-    """Format tests/data/cython/<name>.pyx through the full pipeline.
+    """Format tests/data/cython/<name>.pyx and assert Cython AST equivalence.
 
-    Uses format_file_contents with fast=False so the AST equivalence check
-    (cython_safety.assert_equivalent) and the stability check both run,
-    matching what 'black file.pyx' does on the CLI.
+    Mirrors Black's _assert_format_inner pattern: call the core formatting
+    function directly, then run the safety check as an explicit separate step.
     """
+    from black.cython_safety import assert_equivalent
+
     src = (DATA_DIR / f"{name}.pyx").read_text()
-    try:
-        return format_file_contents(src, fast=False, mode=CYTHON_MODE)
-    except NothingChanged:
-        return src
+    dst = format_cython_string(src, fast=False, mode=CYTHON_MODE)
+    if src != dst:
+        assert_equivalent(src, dst)
+    return dst
 
 
 def _expected(name: str) -> str:
@@ -277,3 +279,76 @@ def test_format_cython_string_bad_cython_parse_fails_at_gate(
             mode=black.Mode(),
             write_back=black.WriteBack.NO,
         )
+
+
+# ---------------------------------------------------------------------------
+# CLI path: format_file_in_place with fast=False exercises the full pipeline
+# ---------------------------------------------------------------------------
+
+def test_format_file_in_place_pyx_runs_safety_checks(
+    tmp_path: pathlib.Path,
+) -> None:
+    """format_file_in_place with fast=False (the default CLI path) formats a
+    Cython .pyx file and runs the safety checks without crashing.
+    """
+    pyx = tmp_path / "test.pyx"
+    pyx.write_text("def add(int a, int b):\n    return a+b\n")
+    changed = black.format_file_in_place(
+        pyx, fast=False, mode=black.Mode(), write_back=black.WriteBack.YES
+    )
+    assert changed is True
+    assert pyx.read_text() == "def add(int a, int b):\n    return a + b\n"
+
+
+# ---------------------------------------------------------------------------
+# Safety check wiring: assert_equivalent is called and its errors propagate
+# ---------------------------------------------------------------------------
+
+@pytest.mark.incompatible_with_mypyc
+def test_cython_safety_check_is_called_by_pipeline(
+    tmp_path: pathlib.Path,
+) -> None:
+    """format_file_in_place propagates errors from cython_safety.assert_equivalent.
+
+    Mirrors test_black.py::test_code_option_safe: patches assert_equivalent to
+    raise so we can confirm it is wired into the pipeline for .pyx files, not
+    silently skipped.
+    """
+    import black.cython_safety as cython_safety
+
+    pyx = tmp_path / "test.pyx"
+    pyx.write_text("def add(int a, int b):\n    return a+b\n")
+    with patch.object(
+        cython_safety, "assert_equivalent", side_effect=AssertionError("mocked check")
+    ):
+        with pytest.raises(AssertionError, match="mocked check"):
+            black.format_file_in_place(
+                pyx, fast=False, mode=black.Mode(), write_back=black.WriteBack.NO
+            )
+
+
+@pytest.mark.incompatible_with_mypyc
+def test_cython_safety_check_catches_ast_corruption(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The safety check catches a real AST change introduced by a buggy unmask.
+
+    Patches unmask_cython to rename a function in its output, simulating a
+    masking/unmasking bug.  Verifies that cython_safety.assert_equivalent
+    raises, confirming the check would catch real corruption in practice.
+    """
+    pyx = tmp_path / "test.pyx"
+    pyx.write_text("cdef int foo(int x):\n    return x\n")
+
+    real_unmask = black.unmask_cython
+
+    def corrupting_unmask(src: str, replacements: list) -> str:
+        return real_unmask(src, replacements).replace("foo", "CORRUPTED")
+
+    from black.cython_safety import ASTDifference
+
+    with patch.object(black, "unmask_cython", side_effect=corrupting_unmask):
+        with pytest.raises(ASTDifference, match="foo.*CORRUPTED"):
+            black.format_file_in_place(
+                pyx, fast=False, mode=black.Mode(), write_back=black.WriteBack.NO
+            )

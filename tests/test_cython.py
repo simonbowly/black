@@ -146,6 +146,13 @@ def test_ctypedef_formatting() -> None:
     assert _format_fixture("ctypedef") == _expected("ctypedef")
 
 
+def test_nogil_formatting() -> None:
+    """nogil and with gil function-header postfixes are masked via a comment
+    anchor, formatted, and restored.  Phase 2 Step 8.
+    """
+    assert _format_fixture("nogil") == _expected("nogil")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

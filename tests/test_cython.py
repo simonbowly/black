@@ -168,6 +168,14 @@ def test_cdef_block_formatting() -> None:
     assert _format_fixture("cdef_block") == _expected("cdef_block")
 
 
+def test_multi_cdef_formatting() -> None:
+    """cdef TYPE var1, var2, var3 [= expr] declarations are masked as a single
+    placeholder spanning the whole declaration, formatted, and restored.
+    Phase 2 Step 12.
+    """
+    assert _format_fixture("multi_cdef") == _expected("multi_cdef")
+
+
 def test_cdef_extern_formatting() -> None:
     """cdef extern from "h": header is masked as 'class __cy_extern_NAME', body
     declarations are handled by the bare NAME NAME handler, formatted, and

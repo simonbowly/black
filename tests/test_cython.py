@@ -11,7 +11,7 @@ from dataclasses import replace
 import pytest
 
 import black
-from black import Mode, NothingChanged, format_cython_string, format_str
+from black import Mode, NothingChanged, format_cython_string, format_file_contents, format_str
 from black.handle_cython import cython_dependencies_are_installed
 
 pytestmark = pytest.mark.cython
@@ -85,9 +85,17 @@ DATA_DIR = pathlib.Path(__file__).parent / "data" / "cython"
 
 
 def _format_fixture(name: str) -> str:
-    """Run format_cython_string on tests/data/cython/<name>.pyx and return result."""
+    """Format tests/data/cython/<name>.pyx through the full pipeline.
+
+    Uses format_file_contents with fast=False so the AST equivalence check
+    (cython_safety.assert_equivalent) and the stability check both run,
+    matching what 'black file.pyx' does on the CLI.
+    """
     src = (DATA_DIR / f"{name}.pyx").read_text()
-    return format_cython_string(src, fast=False, mode=CYTHON_MODE)
+    try:
+        return format_file_contents(src, fast=False, mode=CYTHON_MODE)
+    except NothingChanged:
+        return src
 
 
 def _expected(name: str) -> str:

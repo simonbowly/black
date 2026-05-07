@@ -72,7 +72,7 @@ uvloop = [
 ]
 d = ["aiohttp>=3.10"]
 jupyter = ["ipython>=7.8.0", "tokenize-rt>=3.2.0"]
-cython = ["Cython>=3.0.0"]
+cython = ["Cython==3.1.4"]
 
 [dependency-groups]
 build = ["hatch==1.15.1", "hatch-fancy-pypi-readme", "hatch-vcs>=0.3.0", "virtualenv<21.0.0"]

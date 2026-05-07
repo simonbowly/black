@@ -70,7 +70,7 @@ def _tokenize_src(src: str) -> list[_tokenize.TokenInfo]:
 
 # Cython-specific NAME tokens not yet handled by the masker.
 # Updated as each Phase 2 step adds a new construct.
-_UNHANDLED_KEYWORDS: frozenset[str] = frozenset({"ctypedef"})
+_UNHANDLED_KEYWORDS: frozenset[str] = frozenset()
 
 # Cython keywords that must not appear in the masked source after masking.
 # Any remaining occurrence means the masker encountered an unhandled construct.
@@ -374,6 +374,39 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     continue
 
             # Unhandled: block_header, multi_variable, cdef_class, cpdef non-function, etc.
+            i += 1
+            continue
+
+        # ---- ctypedef TYPE ALIAS (simple alias only; struct/enum/fused deferred) ----
+        if tok.type == _tokenize.NAME and tok.string == "ctypedef":
+            name_toks: list[str] = []
+            last_name_idx = -1
+            saw_colon = False
+            k = i + 1
+            while k < n:
+                t = toks[k]
+                if t.type in (
+                    _tokenize.NEWLINE,
+                    _tokenize.ENDMARKER,
+                    _tokenize.COMMENT,
+                ):
+                    break
+                if t.type == _tokenize.OP and t.string in (":", "("):
+                    saw_colon = True  # struct/enum/fptr block — leave unmasked
+                    break
+                if t.type == _tokenize.NAME:
+                    name_toks.append(t.string)
+                    last_name_idx = k
+                k += 1
+
+            if not saw_colon and last_name_idx >= 0 and len(name_toks) >= 2:
+                span_start = _abs_start(tok, offsets)
+                span_end = _abs_end(toks[last_name_idx], offsets)
+                ph = _placeholder("ctypedef", *name_toks)
+                edits.append(_Edit(span_start, span_end, ph, src[span_start:span_end]))
+                i = k
+                continue
+
             i += 1
             continue
 

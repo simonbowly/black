@@ -49,6 +49,7 @@ from black.files import (
 )
 from black.handle_cython import (
     CYTHON_SUFFIXES,
+    MISSING_DEP_MESSAGE,
     cython_dependencies_are_installed,
 )
 from black.handle_cython_syntax import mask_cython, unmask_cython, validate_cython_subset
@@ -928,6 +929,8 @@ def reformat_one(
                 mode = replace(mode, is_pyi=True)
             elif src.suffix == ".ipynb":
                 mode = replace(mode, is_ipynb=True)
+            elif src.suffix in CYTHON_SUFFIXES:
+                mode = replace(mode, is_cython=True)
             if format_stdin_to_stdout(
                 fast=fast, write_back=write_back, mode=mode, lines=lines
             ):
@@ -975,6 +978,8 @@ def format_file_in_place(
         mode = replace(mode, is_pyi=True)
     elif src.suffix == ".ipynb":
         mode = replace(mode, is_ipynb=True)
+    elif src.suffix in CYTHON_SUFFIXES:
+        mode = replace(mode, is_cython=True)
 
     then = datetime.fromtimestamp(src.stat().st_mtime, timezone.utc)
     header = b""
@@ -1089,15 +1094,20 @@ def check_stability_and_equivalence(
     equivalent, or if a second pass of the formatter would format the
     content differently.
     """
-    try:
-        assert_equivalent(src_contents, dst_contents)
-    except ASTSafetyError:
-        if _target_versions_exceed_runtime(mode.target_versions):
-            raise ASTSafetyError(
-                "failed to verify equivalence of the formatted output:"
-                f" {_version_mismatch_message(mode.target_versions)}"
-            ) from None
-        raise
+    if mode.is_cython:
+        from black.cython_safety import assert_equivalent as cython_assert_equivalent
+
+        cython_assert_equivalent(src_contents, dst_contents)
+    else:
+        try:
+            assert_equivalent(src_contents, dst_contents)
+        except ASTSafetyError:
+            if _target_versions_exceed_runtime(mode.target_versions):
+                raise ASTSafetyError(
+                    "failed to verify equivalence of the formatted output:"
+                    f" {_version_mismatch_message(mode.target_versions)}"
+                ) from None
+            raise
     assert_stable(src_contents, dst_contents, mode=mode, lines=lines)
 
 
@@ -1116,6 +1126,8 @@ def format_file_contents(
     """
     if mode.is_ipynb:
         dst_contents = format_ipynb_string(src_contents, fast=fast, mode=mode)
+    elif mode.is_cython:
+        dst_contents = format_cython_string(src_contents, fast=fast, mode=mode)
     else:
         dst_contents = format_str(src_contents, mode=mode, lines=lines)
     if src_contents == dst_contents:
@@ -1123,6 +1135,8 @@ def format_file_contents(
 
     if not fast and not mode.is_ipynb:
         # Jupyter notebooks will already have been checked above.
+        # Cython: check runs on the restored output (not a masked intermediate),
+        # so we do NOT short-circuit is_cython here.
         check_stability_and_equivalence(
             src_contents, dst_contents, mode=mode, lines=lines
         )
@@ -1211,11 +1225,53 @@ def format_ipynb_string(src_contents: str, *, fast: bool, mode: Mode) -> FileCon
 
 
 def format_cython_string(src_contents: str, *, fast: bool, mode: Mode) -> FileContent:
-    """Format Cython source file using a mask-format-restore pipeline.
+    """Format Cython source using the try-Python-first / mask-format-restore pipeline.
 
-    Phase 1 stub: raises NotImplementedError until the pipeline is wired up.
+    See extend-black-cython.md for the full pipeline spec.
     """
-    raise NotImplementedError("Cython formatting pipeline not yet wired up")
+    # Step 1: Black parse gate (parse-only; no formatting yet)
+    try:
+        lib2to3_parse(src_contents, target_versions=mode.target_versions)
+    except InvalidInput:
+        pass  # proceed to Cython path
+    else:
+        # Step 2: Python path — format normally, clearing is_cython so the
+        # cache key separates Cython-mode and Python-mode output.
+        python_mode = replace(mode, is_cython=False)
+        dst = format_str(src_contents, mode=python_mode)
+        if dst == src_contents:
+            raise NothingChanged
+        return dst
+
+    # Step 3: Require Cython dependency
+    if not cython_dependencies_are_installed(warn=False):
+        raise ValueError(MISSING_DEP_MESSAGE)
+
+    # Step 4: Cython parse gate — abort before any masking if Cython rejects the source
+    from black.cython_safety import _parse as _cython_parse
+    from Cython.Compiler.Errors import CompileError as _CythonCompileError
+
+    try:
+        _cython_parse(src_contents)
+    except _CythonCompileError as exc:
+        raise InvalidInput(f"Cython parse failed: {exc}") from exc
+
+    # Step 5: Confirm every Cython-only construct is handled by the masker
+    validate_cython_subset(src_contents)
+
+    # Step 6: Replace Cython-only spans with __cy_* placeholders
+    masked, replacements = mask_cython(src_contents)
+
+    # Step 7: Format the masked (plain-Python) source
+    python_mode = replace(mode, is_cython=False)
+    formatted = format_str(masked, mode=python_mode)
+
+    # Step 8: Restore original Cython spans into the Black-formatted output
+    dst = unmask_cython(formatted, replacements)
+
+    if dst == src_contents:
+        raise NothingChanged
+    return dst
 
 
 def format_str(

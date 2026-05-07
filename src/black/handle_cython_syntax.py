@@ -300,6 +300,28 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 i = j
                 continue
 
+            # ---- cdef class header ----
+            if decl_type == "cdef_class" and keyword == "cdef":
+                # j is at the 'class' keyword; find the class name (first NAME after it)
+                class_name_idx = -1
+                k = j + 1
+                while k < n:
+                    t = toks[k]
+                    if t.type == _tokenize.NAME:
+                        class_name_idx = k
+                        break
+                    k += 1
+
+                if class_name_idx >= 0:
+                    s_start = _abs_start(tok, offsets)
+                    s_end = _abs_end(toks[class_name_idx], offsets)
+                    ph = _placeholder("class", toks[class_name_idx].string)
+                    edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                    i = class_name_idx + 1
+                    continue
+                i += 1
+                continue
+
             # ---- variable declaration (cdef only) ----
             if decl_type == "variable" and keyword == "cdef":
                 name_toks: list[str] = []

@@ -125,6 +125,13 @@ def test_cdef_class_formatting() -> None:
     assert _format_fixture("cdef_class") == _expected("cdef_class")
 
 
+def test_typed_def_formatting() -> None:
+    """Typed arguments in plain def functions are masked, formatted, and restored.
+    Phase 2 Step 5.
+    """
+    assert _format_fixture("typed_def") == _expected("typed_def")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

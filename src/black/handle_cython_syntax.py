@@ -1,41 +1,265 @@
 """Cython syntax masking and restoration.
 
-Phase 1: stub implementations.  All functions are no-ops that pass source
-through unchanged, allowing the pipeline plumbing to be tested end-to-end
-before real masking rules are added in Phase 2.
+The masker replaces Cython-only spans with __cy_* placeholder identifiers so
+that Black's Python formatter can process the surrounding Python skeleton.
+The restorer walks the __cy_* anchors in left-to-right order and substitutes
+the original Cython text back in.
+
+Placeholder contract (see extend-black-cython.md for full spec):
+  - Every placeholder is a bare Python identifier prefixed __cy_.
+  - masked_text always ends at the anchor token; the restorer checks
+    result[anchor_end - len(masked_text) : anchor_end] == masked_text.
+  - Restoration is positional, not by name lookup.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
+import io
+import re
+import tokenize as _tokenize
 
 # A substitution record: (masked_text, original_text).
-# masked_text is the span Black saw; original_text is what gets restored.
+# masked_text is the contiguous span Black saw; its __cy_* anchor is at the
+# END of the string (both identifier-only and skeleton-plus-anchor shapes).
 Replacement = tuple[str, str]
 
 
-def validate_cython_subset(src: str) -> bool:
-    """Return True if every Cython-only construct in src is handled by the masker.
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-    Phase 1 stub: always returns True.
+
+def _placeholder(*parts: str) -> str:
+    """Build an identifier-safe __cy_* token from one or more text fragments."""
+    combined = "_".join(p for p in parts if p)
+    sanitized = re.sub(r"[^a-zA-Z0-9]+", "_", combined).strip("_")
+    return f"__cy_{sanitized}"
+
+
+def _line_offsets(src: str) -> list[int]:
+    """Return list where result[i] is the absolute char offset of line i+1."""
+    result = [0]
+    for line in src.splitlines(keepends=True):
+        result.append(result[-1] + len(line))
+    return result
+
+
+def _abs_start(tok: _tokenize.TokenInfo, offsets: list[int]) -> int:
+    row, col = tok.start
+    return offsets[row - 1] + col
+
+
+def _abs_end(tok: _tokenize.TokenInfo, offsets: list[int]) -> int:
+    row, col = tok.end
+    return offsets[row - 1] + col
+
+
+def _tokenize_src(src: str) -> list[_tokenize.TokenInfo]:
+    toks: list[_tokenize.TokenInfo] = []
+    try:
+        for tok in _tokenize.generate_tokens(io.StringIO(src).readline):
+            toks.append(tok)
+    except _tokenize.TokenError:
+        pass  # Cython parse gate already verified the source; partial is OK
+    return toks
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+# Cython-specific NAME tokens not yet handled by the masker.
+# Updated as each Phase 2 step adds a new construct.
+_UNHANDLED_KEYWORDS: frozenset[str] = frozenset({"cdef", "cpdef", "ctypedef"})
+
+
+def validate_cython_subset(src: str) -> None:
+    """Raise if src contains Cython constructs the masker cannot handle yet,
+    or any identifier starting with __cy_ (reserved namespace).
     """
-    return True
+    for tok in _tokenize_src(src):
+        if tok.type != _tokenize.NAME:
+            continue
+        if tok.string.startswith("__cy_"):
+            raise ValueError(
+                f"Source contains reserved identifier {tok.string!r} at line "
+                f"{tok.start[0]}; the '__cy_' prefix is reserved for the Cython "
+                f"formatter"
+            )
+        if tok.string in _UNHANDLED_KEYWORDS:
+            raise NotImplementedError(
+                f"Cython construct {tok.string!r} at line {tok.start[0]} is not "
+                f"yet handled by the masker"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Masking
+# ---------------------------------------------------------------------------
+
+
+class _Edit:
+    __slots__ = ("start", "end", "masked_text", "original_text")
+
+    def __init__(
+        self, start: int, end: int, masked_text: str, original_text: str
+    ) -> None:
+        self.start = start
+        self.end = end
+        self.masked_text = masked_text
+        self.original_text = original_text
 
 
 def mask_cython(src: str) -> tuple[str, list[Replacement]]:
     """Replace Cython-only spans with __cy_* placeholders.
 
-    Phase 1 stub: returns source unchanged with an empty substitution list.
+    Returns (masked_source, replacements) where replacements is an ordered
+    list of (masked_text, original_text) pairs in left-to-right source order.
     """
-    return src, []
+    toks = _tokenize_src(src)
+    offsets = _line_offsets(src)
+    edits: list[_Edit] = []
+    n = len(toks)
+    i = 0
+
+    while i < n:
+        tok = toks[i]
+
+        # ---- from X.Y cimport a, b, c ----
+        if tok.type == _tokenize.NAME and tok.string == "from":
+            cimport_idx = -1
+            saw_import = False
+            j = i + 1
+            while j < n:
+                t = toks[j]
+                if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                    break
+                if t.type == _tokenize.NAME and t.string == "import":
+                    saw_import = True
+                if (
+                    not saw_import
+                    and t.type == _tokenize.NAME
+                    and t.string == "cimport"
+                ):
+                    cimport_idx = j
+                    break
+                j += 1
+
+            if cimport_idx >= 0:
+                cimport_tok = toks[cimport_idx]
+                name_parts: list[str] = []
+                last_tok = cimport_tok
+                k = cimport_idx + 1
+                while k < n:
+                    t = toks[k]
+                    if t.type in (
+                        _tokenize.NEWLINE,
+                        _tokenize.ENDMARKER,
+                        _tokenize.COMMENT,
+                    ):
+                        break
+                    if t.type == _tokenize.NAME:
+                        name_parts.append(t.string)
+                        last_tok = t
+                    elif t.type == _tokenize.OP and t.string == "*":
+                        name_parts.append("star")
+                        last_tok = t
+                    k += 1
+
+                span_start = _abs_start(cimport_tok, offsets)
+                span_end = _abs_end(last_tok, offsets)
+                original_text = src[span_start:span_end]
+                ph = _placeholder("cimport", *name_parts)
+                edits.append(
+                    _Edit(span_start, span_end, f"import {ph}", original_text)
+                )
+                i = k
+                continue
+
+        # ---- standalone cimport X.Y [as alias] ----
+        if tok.type == _tokenize.NAME and tok.string == "cimport":
+            j = i + 1
+            module_parts: list[str] = []
+            last_tok = tok
+            while j < n:
+                t = toks[j]
+                if t.type == _tokenize.NAME:
+                    module_parts.append(t.string)
+                    last_tok = t
+                    j += 1
+                elif t.type == _tokenize.OP and t.string == ".":
+                    j += 1
+                else:
+                    break
+            span_start = _abs_start(tok, offsets)
+            span_end = _abs_end(last_tok, offsets)
+            original_text = src[span_start:span_end]
+            ph = _placeholder(*module_parts) if module_parts else _placeholder("module")
+            edits.append(_Edit(span_start, span_end, f"import {ph}", original_text))
+            i = j
+            continue
+
+        i += 1
+
+    if not edits:
+        return src, []
+
+    # Apply edits right-to-left so leftward positions are unaffected
+    result = src
+    for edit in reversed(edits):
+        result = result[: edit.start] + edit.masked_text + result[edit.end :]
+
+    # Sanity check: no cimport keyword should remain after masking
+    for t in _tokenize_src(result):
+        if t.type == _tokenize.NAME and t.string == "cimport":
+            raise NotImplementedError(
+                f"mask_cython: 'cimport' at line {t.start[0]} was not masked — "
+                f"parenthesized or multi-line cimport is not yet supported"
+            )
+
+    replacements: list[Replacement] = [
+        (e.masked_text, e.original_text) for e in edits
+    ]
+    return result, replacements
+
+
+# ---------------------------------------------------------------------------
+# Unmasking
+# ---------------------------------------------------------------------------
+
+_ANCHOR_RE = re.compile(r"__cy_\w+")
 
 
 def unmask_cython(src: str, replacements: list[Replacement]) -> str:
     """Restore original Cython spans from the placeholder-substituted Black output.
 
-    Phase 1 stub: returns source unchanged (replacements is always empty from stub).
+    Walks __cy_* anchors left-to-right; for each, verifies the surrounding
+    masked_text context, then replaces that span with original_text.
+    Processes right-to-left so earlier positions are not shifted.
     """
-    return src
+    if not replacements:
+        return src
+
+    anchors = list(_ANCHOR_RE.finditer(src))
+
+    if len(anchors) != len(replacements):
+        raise AssertionError(
+            f"unmask_cython: expected {len(replacements)} __cy_* anchor(s), "
+            f"found {len(anchors)}"
+        )
+
+    result = src
+    for anchor, (masked_text, original_text) in zip(
+        reversed(anchors), reversed(replacements)
+    ):
+        anchor_end = anchor.end()
+        masked_start = anchor_end - len(masked_text)
+        if masked_start < 0 or result[masked_start:anchor_end] != masked_text:
+            actual = result[max(0, masked_start) : anchor_end]
+            raise AssertionError(
+                f"unmask_cython: invariant violated at anchor {anchor.group()!r}: "
+                f"expected {masked_text!r}, found {actual!r}"
+            )
+        result = result[:masked_start] + original_text + result[anchor_end:]
+
+    return result

@@ -133,19 +133,23 @@ def test_pure_python_pyx_reformats(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — Cython-syntax .pyx raises InvalidInput (expected to change in Phase 1)
+# Test 5 — Cython-syntax .pyx raises an error (shape evolves across phases)
 # ---------------------------------------------------------------------------
 
-# NOTE: This test is expected to be updated by Phase 1 of the Cython extension plan.
-# After Phase 1 the error shape changes: with Cython installed the file formats
-# successfully; without Cython the error becomes a missing-dependency message rather
-# than InvalidInput.  See extend-black-cython.md Phase 1 for details.
-def test_cython_syntax_pyx_raises_invalid_input(tmp_path: Path) -> None:
-    """format_file_in_place on a .pyx with Cython-only syntax raises InvalidInput."""
+# History:
+#   Phase 0 (baseline): raised InvalidInput — Black's Python parser rejected cdef.
+#   Phase 1: still raised InvalidInput — stub masker was a no-op.
+#   Phase 2 Step 1: raises NotImplementedError from validate_cython_subset
+#     because 'cdef' is not yet handled by the masker.
+#   Phase 2 (cdef handled): will format successfully — no exception expected.
+#     At that point, change this test to assert no exception is raised.
+def test_cython_syntax_pyx_raises_for_unhandled_construct(tmp_path: Path) -> None:
+    """format_file_in_place on a .pyx with cdef raises until the masker handles it."""
     pyx_file = tmp_path / "cython_syntax.pyx"
     pyx_file.write_text("cdef int x = 1\n")
 
-    with pytest.raises(black.parsing.InvalidInput):
+    # Phase 2 Step 1: validate_cython_subset raises NotImplementedError for cdef.
+    with pytest.raises(NotImplementedError, match="cdef"):
         black.format_file_in_place(
             pyx_file,
             fast=True,

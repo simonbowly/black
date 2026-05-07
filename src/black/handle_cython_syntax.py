@@ -314,6 +314,43 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                         ph_arg = _placeholder(*arg_name_toks)
                         edits.append(_Edit(sa_start, sa_end, ph_arg, src[sa_start:sa_end]))
 
+                # Check for nogil / with gil postfix between ) and :
+                # The outer arg-scan loop did j += 1 before breaking on ')', so
+                # j is now one past ')'.  The ')' token is at j - 1.
+                # Scan ahead; if we see 'nogil' or 'with' 'gil' before the ':',
+                # replace ') postfix:' → '):  # __cy_postfix_NAME (comment anchor).
+                paren_idx = j - 1  # index of the closing ')'
+                postfix_name = ""
+                pk = j  # j is already one past ')', scan from there
+                colon_idx = -1
+                while pk < n:
+                    pt = toks[pk]
+                    if pt.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                        break
+                    if pt.type == _tokenize.OP and pt.string == ":":
+                        colon_idx = pk
+                        break
+                    if pt.type == _tokenize.NAME and pt.string == "nogil":
+                        postfix_name = "nogil"
+                    elif pt.type == _tokenize.NAME and pt.string == "with":
+                        # check next token for 'gil'
+                        pk += 1
+                        if (
+                            pk < n
+                            and toks[pk].type == _tokenize.NAME
+                            and toks[pk].string == "gil"
+                        ):
+                            postfix_name = "with_gil"
+                    pk += 1
+
+                if postfix_name and colon_idx >= 0:
+                    pf_start = _abs_start(toks[paren_idx], offsets)
+                    pf_end = _abs_end(toks[colon_idx], offsets)
+                    ph_pf = _placeholder("postfix", postfix_name)
+                    masked_pf = f"):  # {ph_pf}"
+                    edits.append(_Edit(pf_start, pf_end, masked_pf, src[pf_start:pf_end]))
+                    j = colon_idx + 1
+
                 # Advance i past ) and : to the start of the next logical line
                 while j < n:
                     if toks[j].type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):

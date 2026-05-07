@@ -190,6 +190,24 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
         if tok.type == _tokenize.NAME and tok.string in ("cdef", "cpdef"):
             keyword = tok.string
 
+            # ---- cdef extern from "h": block header ----
+            if (
+                keyword == "cdef"
+                and i + 3 < n
+                and toks[i + 1].type == _tokenize.NAME
+                and toks[i + 1].string == "extern"
+                and toks[i + 2].type == _tokenize.NAME
+                and toks[i + 2].string == "from"
+                and toks[i + 3].type == _tokenize.STRING
+            ):
+                hdr_bare = toks[i + 3].string.strip("'\"")
+                s_start = _abs_start(tok, offsets)
+                s_end = _abs_end(toks[i + 3], offsets)
+                ph = _placeholder("extern", hdr_bare)
+                edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                i = i + 4  # points at ':' — processed normally by main loop
+                continue
+
             # Classify by scanning ahead for (, :, =, 'class', struct/union/enum,
             # or NEWLINE.  Track [ ] depth so colons inside memoryview are ignored.
             open_paren_idx = -1

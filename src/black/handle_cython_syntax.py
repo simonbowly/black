@@ -354,6 +354,84 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             i += 1
             continue
 
+        # ---- plain def with Cython-typed arguments ----
+        if tok.type == _tokenize.NAME and tok.string == "def":
+            # Find the opening paren of the parameter list.
+            open_paren_idx = -1
+            j = i + 1
+            while j < n:
+                t = toks[j]
+                if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                    break
+                if t.type == _tokenize.OP and t.string == "(":
+                    open_paren_idx = j
+                    break
+                j += 1
+
+            if open_paren_idx >= 0:
+                # Scan arguments for typed spans (TYPE NAME pairs).
+                # Break on ':' to avoid masking Python annotation-style args.
+                j = open_paren_idx + 1
+                while j < n:
+                    t = toks[j]
+                    if t.type == _tokenize.OP and t.string == ")":
+                        break
+                    if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                        break
+
+                    def_arg_toks: list[str] = []
+                    def_arg_first: int = -1
+                    def_arg_last: int = -1
+                    k = j
+                    while k < n:
+                        t2 = toks[k]
+                        if t2.type == _tokenize.OP and t2.string in (",", ")", "=", ":"):
+                            break
+                        if t2.type in (_tokenize.NL, _tokenize.COMMENT):
+                            k += 1
+                            continue
+                        if t2.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                            break
+                        if t2.type == _tokenize.NAME:
+                            def_arg_toks.append(t2.string)
+                            if def_arg_first < 0:
+                                def_arg_first = k
+                            def_arg_last = k
+                        k += 1
+
+                    depth = 0
+                    sk = k
+                    while sk < n:
+                        t3 = toks[sk]
+                        if t3.type == _tokenize.OP and t3.string == "(":
+                            depth += 1
+                        elif t3.type == _tokenize.OP and t3.string == ")":
+                            if depth == 0:
+                                j = sk
+                                break
+                            depth -= 1
+                        elif (
+                            t3.type == _tokenize.OP
+                            and t3.string == ","
+                            and depth == 0
+                        ):
+                            j = sk + 1
+                            break
+                        sk += 1
+                    else:
+                        j = sk
+
+                    if len(def_arg_toks) >= 2 and def_arg_first >= 0:
+                        sa_start = _abs_start(toks[def_arg_first], offsets)
+                        sa_end = _abs_end(toks[def_arg_last], offsets)
+                        ph_arg = _placeholder(*def_arg_toks)
+                        edits.append(
+                            _Edit(sa_start, sa_end, ph_arg, src[sa_start:sa_end])
+                        )
+
+            i += 1
+            continue
+
         # ---- standalone cimport X.Y [as alias] ----
         if tok.type == _tokenize.NAME and tok.string == "cimport":
             j = i + 1

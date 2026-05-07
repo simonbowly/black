@@ -477,7 +477,38 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     i = k
                     continue
 
-            # Unhandled: block_header, multi_variable, cdef_class, cpdef non-function, etc.
+            # ---- multi-variable cdef: cdef TYPE var1, var2 [= expr], var3 ----
+            # Replace the entire declaration with a single placeholder so the
+            # original text (including initializers) is preserved verbatim.
+            # Splitting per-variable would leave 'a = 1, b = 2' which is not
+            # valid Python.
+            if decl_type == "multi_variable" and keyword == "cdef":
+                name_toks: list[str] = []
+                last_tok_idx = -1
+                k = i + 1
+                while k < n:
+                    t = toks[k]
+                    if t.type in (
+                        _tokenize.NEWLINE,
+                        _tokenize.ENDMARKER,
+                        _tokenize.COMMENT,
+                    ):
+                        break
+                    if t.type == _tokenize.NAME:
+                        name_toks.append(t.string)
+                    last_tok_idx = k
+                    k += 1
+                if last_tok_idx >= 0 and name_toks:
+                    span_start = _abs_start(tok, offsets)
+                    span_end = _abs_end(toks[last_tok_idx], offsets)
+                    ph = _placeholder(*name_toks)
+                    edits.append(
+                        _Edit(span_start, span_end, ph, src[span_start:span_end])
+                    )
+                i = k
+                continue
+
+            # Unhandled: block_header, cdef_class, cpdef non-function, etc.
             i += 1
             continue
 

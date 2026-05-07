@@ -118,6 +118,13 @@ def test_cdef_function_formatting() -> None:
     assert _format_fixture("cdef_functions") == _expected("cdef_functions")
 
 
+def test_cdef_class_formatting() -> None:
+    """cdef class headers are masked as 'class __cy_class_*', formatted, and
+    restored.  Phase 2 Step 4.
+    """
+    assert _format_fixture("cdef_class") == _expected("cdef_class")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------
@@ -140,6 +147,16 @@ def test_validate_accepts_cpdef_function() -> None:
     from black.handle_cython_syntax import validate_cython_subset
 
     validate_cython_subset("cpdef int foo(int x):\n    return x\n")
+
+
+def test_validate_accepts_cdef_class() -> None:
+    """validate_cython_subset passes for cdef class declarations.
+
+    Phase 2 Step 4: cdef class headers are handled by the masker.
+    """
+    from black.handle_cython_syntax import validate_cython_subset
+
+    validate_cython_subset("cdef class Foo:\n    pass\n")
 
 
 def test_validate_rejects_cy_prefix() -> None:

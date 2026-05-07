@@ -144,11 +144,12 @@ def test_pure_python_pyx_reformats(tmp_path: Path) -> None:
 #   Phase 2 Step 2: cdef variable declarations handled; test moved to cdef function.
 #   Phase 2 Step 3: cdef/cpdef functions handled; test moved to ctypedef.
 #   Phase 2 Step 7: simple ctypedef aliases handled; test moved to ctypedef struct.
+#   Phase 2 Step 9: ctypedef/cdef struct blocks handled; test moved to cdef extern.
 def test_cython_syntax_pyx_raises_for_unhandled_construct(tmp_path: Path) -> None:
     """format_file_in_place on a .pyx with an unhandled cdef construct raises."""
     pyx_file = tmp_path / "cython_syntax.pyx"
-    # ctypedef struct: block-form ctypedef not yet handled by the masker.
-    pyx_file.write_text("ctypedef struct Point:\n    double x\n    double y\n")
+    # cdef extern from: not yet handled by the masker.
+    pyx_file.write_text('cdef extern from "mylib.h":\n    int MY_CONST\n')
 
     # Post-masking sanity check raises NotImplementedError for unmasked cdef.
     with pytest.raises(NotImplementedError):

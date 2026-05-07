@@ -15,6 +15,7 @@ Placeholder contract (see extend-black-cython.md for full spec):
 from __future__ import annotations
 
 import io
+import keyword as _keyword
 import re
 import tokenize as _tokenize
 
@@ -127,6 +128,9 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
     edits: list[_Edit] = []
     n = len(toks)
     i = 0
+    # Tokens excluded from the bare NAME NAME handler (handled by their own branches
+    # later in the loop, or meaningless as type names).
+    _bare_excl = frozenset({"cimport", "nogil", "gil", "extern"})
 
     while i < n:
         tok = toks[i]
@@ -186,11 +190,13 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
         if tok.type == _tokenize.NAME and tok.string in ("cdef", "cpdef"):
             keyword = tok.string
 
-            # Classify by scanning ahead for (, :, =, 'class', or NEWLINE.
-            # Track [ ] depth so colons inside memoryview slices are ignored.
+            # Classify by scanning ahead for (, :, =, 'class', struct/union/enum,
+            # or NEWLINE.  Track [ ] depth so colons inside memoryview are ignored.
             open_paren_idx = -1
             decl_type = "variable"  # default for cdef; will be overridden for cpdef
             bracket_depth = 0
+            struct_kw = ""       # "struct" / "union" / "enum" if seen
+            struct_name_idx = -1  # index of the block-name NAME token
             j = i + 1
             while j < n:
                 t = toks[j]
@@ -210,8 +216,20 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                         decl_type = "function"
                         break
                     if keyword == "cdef":
+                        if t.type == _tokenize.NAME and t.string in (
+                            "struct",
+                            "union",
+                            "enum",
+                        ):
+                            struct_kw = t.string
+                            j += 1
+                            continue
+                        if struct_kw and t.type == _tokenize.NAME:
+                            struct_name_idx = j
+                            j += 1
+                            continue
                         if t.type == _tokenize.OP and t.string == ":":
-                            decl_type = "block_header"
+                            decl_type = "struct_block" if struct_kw else "block_header"
                             break
                         if t.type == _tokenize.OP and t.string == ",":
                             decl_type = "multi_variable"
@@ -360,6 +378,18 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 i = j
                 continue
 
+            # ---- cdef struct / union / enum block header ----
+            if decl_type == "struct_block" and keyword == "cdef":
+                if struct_name_idx >= 0:
+                    s_start = _abs_start(tok, offsets)
+                    s_end = _abs_end(toks[struct_name_idx], offsets)
+                    ph = _placeholder(struct_kw, toks[struct_name_idx].string)
+                    edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                    i = struct_name_idx + 1
+                    continue
+                i += 1
+                continue
+
             # ---- cdef class header ----
             if decl_type == "cdef_class" and keyword == "cdef":
                 # j is at the 'class' keyword; find the class name (first NAME after it)
@@ -414,11 +444,13 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             i += 1
             continue
 
-        # ---- ctypedef TYPE ALIAS (simple alias only; struct/enum/fused deferred) ----
+        # ---- ctypedef: simple alias or struct/union/enum block header ----
         if tok.type == _tokenize.NAME and tok.string == "ctypedef":
             name_toks: list[str] = []
             last_name_idx = -1
             saw_colon = False
+            ct_struct_kw = ""       # "struct" / "union" / "enum" if present
+            ct_struct_name_idx = -1  # index of the block name token
             k = i + 1
             while k < n:
                 t = toks[k]
@@ -428,14 +460,36 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     _tokenize.COMMENT,
                 ):
                     break
-                if t.type == _tokenize.OP and t.string in (":", "("):
-                    saw_colon = True  # struct/enum/fptr block — leave unmasked
+                if t.type == _tokenize.OP and t.string == ":":
+                    saw_colon = True
                     break
+                if t.type == _tokenize.OP and t.string == "(":
+                    break  # function pointer — leave unmasked
+                if t.type == _tokenize.NAME and t.string in (
+                    "struct",
+                    "union",
+                    "enum",
+                ) and not ct_struct_kw:
+                    ct_struct_kw = t.string
+                    k += 1
+                    continue
                 if t.type == _tokenize.NAME:
                     name_toks.append(t.string)
                     last_name_idx = k
+                    if ct_struct_kw and ct_struct_name_idx < 0:
+                        ct_struct_name_idx = k
                 k += 1
 
+            # ctypedef struct/union/enum Name: block header
+            if saw_colon and ct_struct_kw and ct_struct_name_idx >= 0:
+                s_start = _abs_start(tok, offsets)
+                s_end = _abs_end(toks[ct_struct_name_idx], offsets)
+                ph = _placeholder("ctypedef", ct_struct_kw, toks[ct_struct_name_idx].string)
+                edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                i = ct_struct_name_idx + 1
+                continue
+
+            # ctypedef TYPE ALIAS simple alias
             if not saw_colon and last_name_idx >= 0 and len(name_toks) >= 2:
                 span_start = _abs_start(tok, offsets)
                 span_end = _abs_end(toks[last_name_idx], offsets)
@@ -536,7 +590,40 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                             _Edit(sa_start, sa_end, ph_arg, src[sa_start:sa_end])
                         )
 
-            i += 1
+            # Advance i past the entire header line so the bare NAME NAME handler
+            # does not re-scan the typed args inside the parentheses.
+            if open_paren_idx >= 0:
+                while j < n:
+                    if toks[j].type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                        j += 1
+                        break
+                    j += 1
+                i = j
+            else:
+                i += 1
+            continue
+
+        # ---- bare TYPE NAME declaration (struct/union/enum body, no cdef prefix) ----
+        # Two adjacent non-keyword NAME tokens on the same source line cannot be valid
+        # Python — they must be a Cython bare type declaration (struct/enum body).
+        # Cython-specific keywords (cimport, nogil, gil) are also excluded so they are
+        # handled by their own branches below / on the next iteration.
+        if (
+            tok.type == _tokenize.NAME
+            and not _keyword.iskeyword(tok.string)
+            and tok.string not in _bare_excl
+            and i + 1 < n
+            and toks[i + 1].type == _tokenize.NAME
+            and not _keyword.iskeyword(toks[i + 1].string)
+            and toks[i + 1].string not in _bare_excl
+            and toks[i + 1].start[0] == tok.start[0]
+        ):
+            name_tok = toks[i + 1]
+            sp_start = _abs_start(tok, offsets)
+            sp_end = _abs_end(name_tok, offsets)
+            ph = _placeholder(tok.string, name_tok.string)
+            edits.append(_Edit(sp_start, sp_end, ph, src[sp_start:sp_end]))
+            i += 2
             continue
 
         # ---- standalone cimport X.Y [as alias] ----

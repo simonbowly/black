@@ -139,6 +139,13 @@ def test_memoryview_formatting() -> None:
     assert _format_fixture("memoryview") == _expected("memoryview")
 
 
+def test_ctypedef_formatting() -> None:
+    """Simple ctypedef TYPE ALIAS declarations are masked, formatted, and
+    restored.  Phase 2 Step 7.
+    """
+    assert _format_fixture("ctypedef") == _expected("ctypedef")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------
@@ -171,6 +178,16 @@ def test_validate_accepts_cdef_class() -> None:
     from black.handle_cython_syntax import validate_cython_subset
 
     validate_cython_subset("cdef class Foo:\n    pass\n")
+
+
+def test_validate_accepts_ctypedef_alias() -> None:
+    """validate_cython_subset passes for simple ctypedef alias declarations.
+
+    Phase 2 Step 7: ctypedef TYPE ALIAS is now handled.
+    """
+    from black.handle_cython_syntax import validate_cython_subset
+
+    validate_cython_subset("ctypedef int MyInt\nctypedef double Scalar\n")
 
 
 def test_validate_rejects_cy_prefix() -> None:

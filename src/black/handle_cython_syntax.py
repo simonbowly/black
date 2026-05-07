@@ -70,7 +70,7 @@ def _tokenize_src(src: str) -> list[_tokenize.TokenInfo]:
 
 # Cython-specific NAME tokens not yet handled by the masker.
 # Updated as each Phase 2 step adds a new construct.
-_UNHANDLED_KEYWORDS: frozenset[str] = frozenset({"cpdef", "ctypedef"})
+_UNHANDLED_KEYWORDS: frozenset[str] = frozenset({"ctypedef"})
 
 # Cython keywords that must not appear in the masked source after masking.
 # Any remaining occurrence means the masker encountered an unhandled construct.
@@ -182,66 +182,154 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 i = k
                 continue
 
-        # ---- cdef TYPE VAR [= EXPR] variable declaration ----
-        if tok.type == _tokenize.NAME and tok.string == "cdef":
+        # ---- cdef / cpdef: variable or function header ----
+        if tok.type == _tokenize.NAME and tok.string in ("cdef", "cpdef"):
+            keyword = tok.string
+
             # Classify by scanning ahead for (, :, =, 'class', or NEWLINE.
-            decl_type = "variable"
+            open_paren_idx = -1
+            decl_type = "variable"  # default for cdef; will be overridden for cpdef
             j = i + 1
             while j < n:
                 t = toks[j]
                 if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER, _tokenize.COMMENT):
                     break
-                if t.type == _tokenize.OP and t.string in ("(", ":"):
-                    decl_type = "function_or_block"
+                if t.type == _tokenize.OP and t.string == "(":
+                    open_paren_idx = j
+                    decl_type = "function"
                     break
-                if t.type == _tokenize.OP and t.string == ",":
-                    decl_type = "multi_variable"
-                    break
-                if t.type == _tokenize.OP and t.string == "=":
-                    break  # = before ( or : → simple variable with initializer
-                if t.type == _tokenize.NAME and t.string == "class":
-                    decl_type = "cdef_class"
-                    break
+                if keyword == "cdef":
+                    if t.type == _tokenize.OP and t.string == ":":
+                        decl_type = "block_header"
+                        break
+                    if t.type == _tokenize.OP and t.string == ",":
+                        decl_type = "multi_variable"
+                        break
+                    if t.type == _tokenize.OP and t.string == "=":
+                        break  # variable with initializer
+                    if t.type == _tokenize.NAME and t.string == "class":
+                        decl_type = "cdef_class"
+                        break
                 j += 1
 
-            if decl_type != "variable":
-                # Not a simple variable declaration; leave unmasked.
-                # The post-masking check will catch this as unhandled.
-                i += 1
+            # ---- function header ----
+            if decl_type == "function" and open_paren_idx >= 0:
+                # Collect return-type + function-name NAMEs (keyword → open paren).
+                hdr_name_toks: list[str] = []
+                last_hdr_idx = -1
+                for k in range(i + 1, open_paren_idx):
+                    if toks[k].type == _tokenize.NAME:
+                        hdr_name_toks.append(toks[k].string)
+                        last_hdr_idx = k
+
+                if last_hdr_idx < 0:
+                    i += 1  # no name before ( — leave unmasked
+                    continue
+
+                # Span 1: keyword … function-name → 'def __cy_...'
+                s1_start = _abs_start(tok, offsets)
+                s1_end = _abs_end(toks[last_hdr_idx], offsets)
+                ph1 = _placeholder(*hdr_name_toks)
+                edits.append(_Edit(s1_start, s1_end, f"def {ph1}", src[s1_start:s1_end]))
+
+                # Typed-argument spans: scan between ( and )
+                j = open_paren_idx + 1
+                while j < n:
+                    t = toks[j]
+                    if t.type == _tokenize.OP and t.string == ")":
+                        j += 1
+                        break
+                    if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                        break
+
+                    # Collect one argument slot (up to , / ) / = )
+                    arg_name_toks: list[str] = []
+                    arg_first_idx = -1
+                    arg_last_idx = -1
+                    k = j
+                    while k < n:
+                        t2 = toks[k]
+                        if t2.type == _tokenize.OP and t2.string in (",", ")"):
+                            break
+                        if t2.type == _tokenize.OP and t2.string == "=":
+                            break  # default value
+                        if t2.type in (_tokenize.NL, _tokenize.COMMENT):
+                            k += 1
+                            continue
+                        if t2.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                            break
+                        if t2.type == _tokenize.NAME:
+                            arg_name_toks.append(t2.string)
+                            if arg_first_idx < 0:
+                                arg_first_idx = k
+                            arg_last_idx = k
+                        k += 1
+
+                    # Skip past any default value, then past the , to the next arg.
+                    depth = 0
+                    sk = k
+                    while sk < n:
+                        t3 = toks[sk]
+                        if t3.type == _tokenize.OP and t3.string == "(":
+                            depth += 1
+                        elif t3.type == _tokenize.OP and t3.string == ")":
+                            if depth == 0:
+                                j = sk  # point at ) so outer loop breaks on it
+                                break
+                            depth -= 1
+                        elif t3.type == _tokenize.OP and t3.string == "," and depth == 0:
+                            j = sk + 1  # advance past ,
+                            break
+                        sk += 1
+                    else:
+                        j = sk
+
+                    # Mask if typed (2+ NAMEs before =)
+                    if len(arg_name_toks) >= 2 and arg_first_idx >= 0:
+                        sa_start = _abs_start(toks[arg_first_idx], offsets)
+                        sa_end = _abs_end(toks[arg_last_idx], offsets)
+                        ph_arg = _placeholder(*arg_name_toks)
+                        edits.append(_Edit(sa_start, sa_end, ph_arg, src[sa_start:sa_end]))
+
+                # Advance i past ) and : to the start of the next logical line
+                while j < n:
+                    if toks[j].type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                        j += 1
+                        break
+                    j += 1
+                i = j
                 continue
 
-            # Collect all NAME tokens between cdef and = (or NEWLINE).
-            name_toks: list[str] = []
-            last_name_idx = -1
-            k = i + 1
-            while k < n:
-                t = toks[k]
-                if t.type in (
-                    _tokenize.NEWLINE,
-                    _tokenize.ENDMARKER,
-                    _tokenize.COMMENT,
-                ):
-                    break
-                if t.type == _tokenize.OP and t.string == "=":
-                    break
-                if t.type == _tokenize.NAME:
-                    name_toks.append(t.string)
-                    last_name_idx = k
-                k += 1
+            # ---- variable declaration (cdef only) ----
+            if decl_type == "variable" and keyword == "cdef":
+                name_toks: list[str] = []
+                last_name_idx = -1
+                k = i + 1
+                while k < n:
+                    t = toks[k]
+                    if t.type in (
+                        _tokenize.NEWLINE,
+                        _tokenize.ENDMARKER,
+                        _tokenize.COMMENT,
+                    ):
+                        break
+                    if t.type == _tokenize.OP and t.string == "=":
+                        break
+                    if t.type == _tokenize.NAME:
+                        name_toks.append(t.string)
+                        last_name_idx = k
+                    k += 1
 
-            if last_name_idx < 0 or len(name_toks) < 1:
-                # Degenerate cdef with no names; leave unmasked.
-                i += 1
-                continue
+                if last_name_idx >= 0 and len(name_toks) >= 1:
+                    span_start = _abs_start(tok, offsets)
+                    span_end = _abs_end(toks[last_name_idx], offsets)
+                    ph = _placeholder(*name_toks)
+                    edits.append(_Edit(span_start, span_end, ph, src[span_start:span_end]))
+                    i = k
+                    continue
 
-            # Span: from 'cdef' through the last NAME (= var name).
-            # The initializer (= EXPR) and trailing comment stay literal.
-            span_start = _abs_start(tok, offsets)
-            span_end = _abs_end(toks[last_name_idx], offsets)
-            original_text = src[span_start:span_end]
-            ph = _placeholder(*name_toks)
-            edits.append(_Edit(span_start, span_end, ph, original_text))
-            i = k
+            # Unhandled: block_header, multi_variable, cdef_class, cpdef non-function, etc.
+            i += 1
             continue
 
         # ---- standalone cimport X.Y [as alias] ----

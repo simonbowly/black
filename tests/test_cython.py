@@ -102,16 +102,27 @@ def test_cimport_formatting() -> None:
     assert _format_fixture("cimport") == _expected("cimport")
 
 
+def test_cdef_variable_formatting() -> None:
+    """cdef TYPE VAR [= EXPR] declarations are masked, formatted, and restored.
+
+    Phase 2 Step 2: simple cdef variable declarations (no function headers,
+    no cdef class, no multi-variable declarations).
+    """
+    assert _format_fixture("cdef_vars") == _expected("cdef_vars")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------
 
-def test_validate_rejects_cdef() -> None:
-    """validate_cython_subset raises for cdef (not yet handled)."""
+def test_validate_accepts_cdef_variable() -> None:
+    """validate_cython_subset passes for simple cdef variable declarations.
+
+    Phase 2 Step 2: cdef variables are handled, so validate no longer raises.
+    """
     from black.handle_cython_syntax import validate_cython_subset
 
-    with pytest.raises(NotImplementedError, match="cdef"):
-        validate_cython_subset("cdef int x = 1\n")
+    validate_cython_subset("cdef int x = 1\ncdef double y\n")
 
 
 def test_validate_rejects_cpdef() -> None:

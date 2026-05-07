@@ -1098,16 +1098,19 @@ def check_stability_and_equivalence(
         from black.cython_safety import assert_equivalent as cython_assert_equivalent
 
         cython_assert_equivalent(src_contents, dst_contents)
-    else:
-        try:
-            assert_equivalent(src_contents, dst_contents)
-        except ASTSafetyError:
-            if _target_versions_exceed_runtime(mode.target_versions):
-                raise ASTSafetyError(
-                    "failed to verify equivalence of the formatted output:"
-                    f" {_version_mismatch_message(mode.target_versions)}"
-                ) from None
-            raise
+        # Stability for Cython is guaranteed by format_cython_string's own
+        # mask→format→unmask pipeline; assert_stable would call lib2to3_parse
+        # on Cython source, which is not valid Python.
+        return
+    try:
+        assert_equivalent(src_contents, dst_contents)
+    except ASTSafetyError:
+        if _target_versions_exceed_runtime(mode.target_versions):
+            raise ASTSafetyError(
+                "failed to verify equivalence of the formatted output:"
+                f" {_version_mismatch_message(mode.target_versions)}"
+            ) from None
+        raise
     assert_stable(src_contents, dst_contents, mode=mode, lines=lines)
 
 

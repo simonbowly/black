@@ -141,15 +141,14 @@ def test_pure_python_pyx_reformats(tmp_path: Path) -> None:
 #   Phase 1: still raised InvalidInput — stub masker was a no-op.
 #   Phase 2 Step 1: raises NotImplementedError from validate_cython_subset
 #     because 'cdef' was not yet handled by the masker.
-#   Phase 2 Step 2: cdef variable declarations are handled; simple cdef now formats
-#     successfully. This test now uses a cdef function header (not yet handled) to
-#     confirm that unhandled constructs still fail with a clear error.
-#   Phase 2 (cdef functions handled): update source to something even later.
+#   Phase 2 Step 2: cdef variable declarations handled; test moved to cdef function.
+#   Phase 2 Step 3: cdef/cpdef functions handled; test moved to ctypedef.
+#   Phase 2 (ctypedef handled): update source to something even later.
 def test_cython_syntax_pyx_raises_for_unhandled_construct(tmp_path: Path) -> None:
     """format_file_in_place on a .pyx with an unhandled cdef construct raises."""
     pyx_file = tmp_path / "cython_syntax.pyx"
-    # cdef function header: not yet handled by the masker (Phase 2 Step 3+).
-    pyx_file.write_text("cdef int add(int a, int b):\n    return a + b\n")
+    # ctypedef: not yet handled by the masker (Phase 2 later).
+    pyx_file.write_text("ctypedef int MyInt\n")
 
     # Post-masking sanity check raises NotImplementedError for unmasked cdef.
     with pytest.raises(NotImplementedError):

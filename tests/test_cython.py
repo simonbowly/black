@@ -111,6 +111,13 @@ def test_cdef_variable_formatting() -> None:
     assert _format_fixture("cdef_vars") == _expected("cdef_vars")
 
 
+def test_cdef_function_formatting() -> None:
+    """cdef/cpdef function headers with typed arguments are masked, formatted,
+    and restored.  Phase 2 Step 3.
+    """
+    assert _format_fixture("cdef_functions") == _expected("cdef_functions")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------
@@ -125,12 +132,14 @@ def test_validate_accepts_cdef_variable() -> None:
     validate_cython_subset("cdef int x = 1\ncdef double y\n")
 
 
-def test_validate_rejects_cpdef() -> None:
-    """validate_cython_subset raises for cpdef (not yet handled)."""
+def test_validate_accepts_cpdef_function() -> None:
+    """validate_cython_subset passes for cpdef function headers.
+
+    Phase 2 Step 3: cpdef functions are now handled.
+    """
     from black.handle_cython_syntax import validate_cython_subset
 
-    with pytest.raises(NotImplementedError, match="cpdef"):
-        validate_cython_subset("cpdef int foo(int x):\n    return x\n")
+    validate_cython_subset("cpdef int foo(int x):\n    return x\n")
 
 
 def test_validate_rejects_cy_prefix() -> None:

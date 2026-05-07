@@ -378,6 +378,25 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 i = j
                 continue
 
+            # ---- cdef: compound block header ----
+            # j == i + 1 means ':' was the very next token after 'cdef' (bare cdef:)
+            # rather than 'cdef extern from "x":' or other compound forms.
+            if (
+                decl_type == "block_header"
+                and keyword == "cdef"
+                and not struct_kw
+                and j == i + 1
+            ):
+                # 'cdef:' with an indented body of bare declarations.
+                # Replace 'cdef' → 'if __cy_cdef_block' so the body becomes a
+                # valid Python if-block; the ':' stays in place.
+                s_start = _abs_start(tok, offsets)
+                s_end = _abs_end(tok, offsets)
+                ph = _placeholder("cdef", "block")
+                edits.append(_Edit(s_start, s_end, f"if {ph}", src[s_start:s_end]))
+                i += 1
+                continue
+
             # ---- cdef struct / union / enum block header ----
             if decl_type == "struct_block" and keyword == "cdef":
                 if struct_name_idx >= 0:
@@ -618,12 +637,27 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             and toks[i + 1].string not in _bare_excl
             and toks[i + 1].start[0] == tok.start[0]
         ):
-            name_tok = toks[i + 1]
+            # Collect all consecutive non-keyword NAMEs on the same line
+            # (e.g. 'unsigned int flags' → '__cy_unsigned_int_flags').
+            bare_toks_list: list[str] = [tok.string]
+            bare_last_k = i
+            k = i + 1
+            src_line = tok.start[0]
+            while (
+                k < n
+                and toks[k].type == _tokenize.NAME
+                and not _keyword.iskeyword(toks[k].string)
+                and toks[k].string not in _bare_excl
+                and toks[k].start[0] == src_line
+            ):
+                bare_toks_list.append(toks[k].string)
+                bare_last_k = k
+                k += 1
             sp_start = _abs_start(tok, offsets)
-            sp_end = _abs_end(name_tok, offsets)
-            ph = _placeholder(tok.string, name_tok.string)
+            sp_end = _abs_end(toks[bare_last_k], offsets)
+            ph = _placeholder(*bare_toks_list)
             edits.append(_Edit(sp_start, sp_end, ph, src[sp_start:sp_end]))
-            i += 2
+            i = k
             continue
 
         # ---- standalone cimport X.Y [as alias] ----

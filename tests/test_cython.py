@@ -194,6 +194,14 @@ def test_cdef_extern_formatting() -> None:
     assert _format_fixture("cdef_extern") == _expected("cdef_extern")
 
 
+def test_cdef_extern_wildcard_formatting() -> None:
+    """cdef extern from *: header is masked as 'class __cy_extern_wildcard', body
+    declarations are handled by existing handlers, formatted, and restored.
+    Phase 2 Step 13.
+    """
+    assert _format_fixture("cdef_extern_wildcard") == _expected("cdef_extern_wildcard")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

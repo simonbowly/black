@@ -231,6 +231,23 @@ def test_fused_types_formatting() -> None:
     assert _format_fixture("fused_types") == _expected("fused_types")
 
 
+def test_unmask_cython_handles_black_wrapped_import() -> None:
+    """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
+    Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect
+    this form and restore the original cimport statement.  Phase 2 Step 17.
+    """
+    from black.handle_cython_syntax import mask_cython, unmask_cython
+
+    src = (
+        "from libcpp.algorithm cimport "
+        "is_sorted, sort, stable_sort, nth_element, all_of, count, copy\n"
+    )
+    masked, replacements = mask_cython(src)
+    formatted = format_str(masked, mode=replace(CYTHON_MODE, is_cython=False))
+    result = unmask_cython(formatted, replacements)
+    assert result == src
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

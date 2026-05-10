@@ -202,6 +202,14 @@ def test_cdef_extern_wildcard_formatting() -> None:
     assert _format_fixture("cdef_extern_wildcard") == _expected("cdef_extern_wildcard")
 
 
+def test_except_postfix_formatting() -> None:
+    """except -1 / except * / except ?-1 and combinations with nogil/with gil
+    in function headers are masked via a comment anchor and restored.
+    Phase 2 Step 14.
+    """
+    assert _format_fixture("except_postfix") == _expected("except_postfix")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

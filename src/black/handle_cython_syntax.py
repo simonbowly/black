@@ -356,13 +356,16 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                         ph_arg = _placeholder(*arg_name_toks)
                         edits.append(_Edit(sa_start, sa_end, ph_arg, src[sa_start:sa_end]))
 
-                # Check for nogil / with gil postfix between ) and :
+                # Check for postfix tokens between ) and : (nogil, with gil,
+                # except VAL / except * / except ?VAL, and combinations).
                 # The outer arg-scan loop did j += 1 before breaking on ')', so
                 # j is now one past ')'.  The ')' token is at j - 1.
-                # Scan ahead; if we see 'nogil' or 'with' 'gil' before the ':',
-                # replace ') postfix:' → '):  # __cy_postfix_NAME (comment anchor).
+                # If any non-whitespace token (other than 'except +', which is
+                # a C++ pattern out of scope) appears before ':', replace
+                # ') postfix:' with '):  # __cy_postfix_... (comment anchor).
                 paren_idx = j - 1  # index of the closing ')'
-                postfix_name = ""
+                has_postfix = False
+                has_except_plus = False  # C++ exception propagation — skip
                 pk = j  # j is already one past ')', scan from there
                 colon_idx = -1
                 while pk < n:
@@ -372,23 +375,32 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     if pt.type == _tokenize.OP and pt.string == ":":
                         colon_idx = pk
                         break
-                    if pt.type == _tokenize.NAME and pt.string == "nogil":
-                        postfix_name = "nogil"
-                    elif pt.type == _tokenize.NAME and pt.string == "with":
-                        # check next token for 'gil'
-                        pk += 1
-                        if (
-                            pk < n
-                            and toks[pk].type == _tokenize.NAME
-                            and toks[pk].string == "gil"
+                    if pt.type == _tokenize.NAME and pt.string == "except":
+                        # peek ahead to distinguish except+VALUE (C++) from
+                        # except VALUE / except * / except ?VALUE (Cython)
+                        pk2 = pk + 1
+                        while pk2 < n and toks[pk2].type in (
+                            _tokenize.NL,
+                            _tokenize.COMMENT,
                         ):
-                            postfix_name = "with_gil"
+                            pk2 += 1
+                        if (
+                            pk2 < n
+                            and toks[pk2].type == _tokenize.OP
+                            and toks[pk2].string == "+"
+                        ):
+                            has_except_plus = True
+                            break
+                        has_postfix = True
+                    elif pt.type not in (_tokenize.NL, _tokenize.COMMENT):
+                        has_postfix = True
                     pk += 1
 
-                if postfix_name and colon_idx >= 0:
+                if has_postfix and not has_except_plus and colon_idx >= 0:
                     pf_start = _abs_start(toks[paren_idx], offsets)
                     pf_end = _abs_end(toks[colon_idx], offsets)
-                    ph_pf = _placeholder("postfix", postfix_name)
+                    postfix_raw = src[pf_start + 1 : pf_end - 1].strip()
+                    ph_pf = _placeholder("postfix", postfix_raw)
                     masked_pf = f"):  # {ph_pf}"
                     edits.append(_Edit(pf_start, pf_end, masked_pf, src[pf_start:pf_end]))
                     j = colon_idx + 1

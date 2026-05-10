@@ -210,6 +210,27 @@ def test_except_postfix_formatting() -> None:
     assert _format_fixture("except_postfix") == _expected("except_postfix")
 
 
+def test_anon_enum_formatting() -> None:
+    """Anonymous cdef enum: blocks (no name) are masked as 'class __cy_cdef_anon_enum:',
+    formatted, and restored.  Phase 2 Step 16.
+    """
+    assert _format_fixture("anon_enum") == _expected("anon_enum")
+
+
+def test_cpdef_enum_formatting() -> None:
+    """cpdef enum [Name]: blocks are masked as 'class __cy_cpdef_enum_*:', formatted,
+    and restored.  Phase 2 Step 16.
+    """
+    assert _format_fixture("cpdef_enum") == _expected("cpdef_enum")
+
+
+def test_fused_types_formatting() -> None:
+    """ctypedef fused Name: and cdef fused Name: block headers are masked as
+    'class __cy_*_fused_Name:', formatted, and restored.  Phase 2 Step 16.
+    """
+    assert _format_fixture("fused_types") == _expected("fused_types")
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: validate_cython_subset rejects unhandled constructs and __cy_ ids
 # ---------------------------------------------------------------------------

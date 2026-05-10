@@ -771,6 +771,50 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             i = k
             continue
 
+        # ---- include "file.pyx" directive ----
+        # 'include NAME_TOKEN' is not valid Python (NAME STRING is rejected by
+        # the parser), so we mask the whole statement as an identifier.
+        if tok.type == _tokenize.NAME and tok.string == "include":
+            j = i + 1
+            if j < n and toks[j].type == _tokenize.STRING and toks[j].start[0] == tok.start[0]:
+                file_raw = toks[j].string.strip("'\"\n")
+                s_start = _abs_start(tok, offsets)
+                s_end = _abs_end(toks[j], offsets)
+                ph = _placeholder("include", file_raw)
+                edits.append(_Edit(s_start, s_end, ph, src[s_start:s_end]))
+                i = j + 1
+                continue
+
+        # ---- bare 'enum:' statement (anonymous enum in extern/struct body) ----
+        # 'enum:' without cdef/cpdef prefix appears in cdef extern from bodies.
+        # Mask 'enum' → 'if __cy_anon_enum' so the body parses as a Python if-block.
+        if tok.type == _tokenize.NAME and tok.string == "enum":
+            # Only mask at statement-start: previous meaningful token is ':', NEWLINE, etc.
+            prev_sig = None
+            for pk in range(i - 1, -1, -1):
+                if toks[pk].type not in (
+                    _tokenize.NL,
+                    _tokenize.NEWLINE,
+                    _tokenize.INDENT,
+                    _tokenize.DEDENT,
+                    _tokenize.COMMENT,
+                    _tokenize.ENCODING,
+                ):
+                    prev_sig = toks[pk]
+                    break
+            at_stmt_start = prev_sig is None or (
+                prev_sig.type == _tokenize.OP and prev_sig.string == ":"
+            )
+            if at_stmt_start:
+                j = i + 1
+                if j < n and toks[j].type == _tokenize.OP and toks[j].string == ":" and toks[j].start[0] == tok.start[0]:
+                    s_start = _abs_start(tok, offsets)
+                    s_end = _abs_end(tok, offsets)
+                    ph = _placeholder("anon", "enum")
+                    edits.append(_Edit(s_start, s_end, f"if {ph}", src[s_start:s_end]))
+                    i = j
+                    continue
+
         # ---- standalone cimport X.Y [as alias] ----
         if tok.type == _tokenize.NAME and tok.string == "cimport":
             j = i + 1

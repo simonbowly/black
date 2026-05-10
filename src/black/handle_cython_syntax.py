@@ -851,12 +851,30 @@ def unmask_cython(src: str, replacements: list[Replacement]) -> str:
     ):
         anchor_end = anchor.end()
         masked_start = anchor_end - len(masked_text)
-        if masked_start < 0 or result[masked_start:anchor_end] != masked_text:
-            actual = result[max(0, masked_start) : anchor_end]
-            raise AssertionError(
-                f"unmask_cython: invariant violated at anchor {anchor.group()!r}: "
-                f"expected {masked_text!r}, found {actual!r}"
+        if masked_start >= 0 and result[masked_start:anchor_end] == masked_text:
+            result = result[:masked_start] + original_text + result[anchor_end:]
+            continue
+
+        # Fallback: Black may have wrapped 'import __cy_X' as
+        # 'import (\n    __cy_X,\n)' when the masked line exceeded 88 chars.
+        # The trailing comma is added by Black's magic trailing comma logic.
+        # Limit search to result[:anchor_end+5] — the closing ')' is at most
+        # a few chars past anchor_end, and anchor positions are stable
+        # (processing right-to-left keeps leftward positions unchanged).
+        if masked_text.startswith("import "):
+            anchor_text = anchor.group()
+            wrapped = re.search(
+                r"import \(\n\s*" + re.escape(anchor_text) + r",?\s*\n\s*\)",
+                result[: anchor_end + 5],
             )
-        result = result[:masked_start] + original_text + result[anchor_end:]
+            if wrapped:
+                result = result[:wrapped.start()] + original_text + result[wrapped.end():]
+                continue
+
+        actual = result[max(0, masked_start) : anchor_end]
+        raise AssertionError(
+            f"unmask_cython: invariant violated at anchor {anchor.group()!r}: "
+            f"expected {masked_text!r}, found {actual!r}"
+        )
 
     return result

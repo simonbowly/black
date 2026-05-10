@@ -2,7 +2,7 @@ cdef extern from "Python.h":
     ctypedef class __builtin__.list [object PyListObject]:
         cdef Py_ssize_t ob_size
 
-    ctypedef class __builtin__.dict  [object PyDictObject]:
+    ctypedef class __builtin__.dict [object PyDictObject]:
         pass
 
     ctypedef struct PyObject

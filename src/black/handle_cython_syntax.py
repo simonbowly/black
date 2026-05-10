@@ -573,13 +573,14 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             i += 1
             continue
 
-        # ---- ctypedef: simple alias or struct/union/enum block header ----
+        # ---- ctypedef: simple alias, struct/union/enum/class block header, or forward decl ----
         if tok.type == _tokenize.NAME and tok.string == "ctypedef":
             name_toks: list[str] = []
             last_name_idx = -1
             saw_colon = False
-            ct_struct_kw = ""       # "struct" / "union" / "enum" if present
-            ct_struct_name_idx = -1  # index of the block name token
+            ct_struct_kw = ""       # "struct" / "union" / "enum" / "class" / "fused" if present
+            ct_struct_name_idx = -1  # last NAME before '[' or ':' after struct kw
+            ct_bracket_end = -1     # index of ']' in [object ...] group, if any
             k = i + 1
             while k < n:
                 t = toks[k]
@@ -594,11 +595,29 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     break
                 if t.type == _tokenize.OP and t.string == "(":
                     break  # function pointer — leave unmasked
+                # Skip [object PyType] bracket group in ctypedef class declarations
+                if t.type == _tokenize.OP and t.string == "[" and ct_struct_kw:
+                    depth = 1
+                    k += 1
+                    while k < n and depth > 0:
+                        if toks[k].type == _tokenize.OP:
+                            if toks[k].string == "[":
+                                depth += 1
+                            elif toks[k].string == "]":
+                                depth -= 1
+                        k += 1
+                    ct_bracket_end = k - 1  # index of ']'
+                    continue
+                # Skip "extern" in "ctypedef extern class"
+                if t.type == _tokenize.NAME and t.string == "extern" and not ct_struct_kw:
+                    k += 1
+                    continue
                 if t.type == _tokenize.NAME and t.string in (
                     "struct",
                     "union",
                     "enum",
                     "fused",
+                    "class",  # ctypedef class (Cython extension type declaration)
                 ) and not ct_struct_kw:
                     ct_struct_kw = t.string
                     k += 1
@@ -606,16 +625,31 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 if t.type == _tokenize.NAME:
                     name_toks.append(t.string)
                     last_name_idx = k
-                    if ct_struct_kw and ct_struct_name_idx < 0:
+                    # Track last NAME before '[' as the block name
+                    if ct_struct_kw and ct_bracket_end < 0:
                         ct_struct_name_idx = k
                 k += 1
 
-            # ctypedef struct/union/enum Name: block header
+            # ctypedef struct/union/enum/class Name: block header
             if saw_colon and ct_struct_kw and ct_struct_name_idx >= 0:
                 s_start = _abs_start(tok, offsets)
-                s_end = _abs_end(toks[ct_struct_name_idx], offsets)
+                if ct_bracket_end >= 0:
+                    s_end = _abs_end(toks[ct_bracket_end], offsets)
+                    next_i = ct_bracket_end + 1
+                else:
+                    s_end = _abs_end(toks[ct_struct_name_idx], offsets)
+                    next_i = ct_struct_name_idx + 1
                 ph = _placeholder("ctypedef", ct_struct_kw, toks[ct_struct_name_idx].string)
                 edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                i = next_i
+                continue
+
+            # ctypedef struct/union/enum TypeName (forward declaration, no body)
+            if not saw_colon and ct_struct_kw and ct_struct_name_idx >= 0:
+                span_start = _abs_start(tok, offsets)
+                span_end = _abs_end(toks[ct_struct_name_idx], offsets)
+                ph = _placeholder("ctypedef", ct_struct_kw, toks[ct_struct_name_idx].string)
+                edits.append(_Edit(span_start, span_end, ph, src[span_start:span_end]))
                 i = ct_struct_name_idx + 1
                 continue
 

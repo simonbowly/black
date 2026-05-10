@@ -190,7 +190,7 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
         if tok.type == _tokenize.NAME and tok.string in ("cdef", "cpdef"):
             keyword = tok.string
 
-            # ---- cdef extern from "h": block header ----
+            # ---- cdef extern from "h"/"*": block header ----
             if (
                 keyword == "cdef"
                 and i + 3 < n
@@ -198,15 +198,21 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 and toks[i + 1].string == "extern"
                 and toks[i + 2].type == _tokenize.NAME
                 and toks[i + 2].string == "from"
-                and toks[i + 3].type == _tokenize.STRING
             ):
-                hdr_bare = toks[i + 3].string.strip("'\"")
-                s_start = _abs_start(tok, offsets)
-                s_end = _abs_end(toks[i + 3], offsets)
-                ph = _placeholder("extern", hdr_bare)
-                edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
-                i = i + 4  # points at ':' — processed normally by main loop
-                continue
+                tok3 = toks[i + 3]
+                if tok3.type == _tokenize.STRING:
+                    hdr_bare = tok3.string.strip("'\"")
+                    ph = _placeholder("extern", hdr_bare)
+                elif tok3.type == _tokenize.OP and tok3.string == "*":
+                    ph = _placeholder("extern", "wildcard")
+                else:
+                    ph = None
+                if ph is not None:
+                    s_start = _abs_start(tok, offsets)
+                    s_end = _abs_end(tok3, offsets)
+                    edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                    i = i + 4  # points at ':' — processed normally by main loop
+                    continue
 
             # Classify by scanning ahead for (, :, =, 'class', struct/union/enum,
             # or NEWLINE.  Track [ ] depth so colons inside memoryview are ignored.

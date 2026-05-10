@@ -231,6 +231,20 @@ def test_fused_types_formatting() -> None:
     assert _format_fixture("fused_types") == _expected("fused_types")
 
 
+def test_include_directive_formatting() -> None:
+    """include "file.pyx" statements are masked as an identifier placeholder,
+    formatted, and restored.  Phase 2 Step 18.
+    """
+    assert _format_fixture("include_directive") == _expected("include_directive")
+
+
+def test_extern_anon_enum_formatting() -> None:
+    """Bare enum: blocks inside cdef extern bodies (no cdef/cpdef prefix) are
+    masked as 'if __cy_anon_enum:', formatted, and restored.  Phase 2 Step 18.
+    """
+    assert _format_fixture("extern_anon_enum") == _expected("extern_anon_enum")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect

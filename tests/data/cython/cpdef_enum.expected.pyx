@@ -9,5 +9,5 @@ cpdef enum:
     BIG = 2
 
 
-def describe(Color c):
-    return c
+def blend(Color a, Color b):
+    return a + b

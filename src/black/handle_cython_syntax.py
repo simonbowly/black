@@ -239,22 +239,29 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                         open_paren_idx = j
                         decl_type = "function"
                         break
-                    if keyword == "cdef":
-                        if t.type == _tokenize.NAME and t.string in (
-                            "struct",
-                            "union",
-                            "enum",
-                        ):
+                    # struct/union/enum/fused keyword for cdef; enum only for cpdef
+                    if t.type == _tokenize.NAME and t.string in (
+                        "struct",
+                        "union",
+                        "enum",
+                        "fused",
+                    ):
+                        if keyword == "cdef" or t.string == "enum":
                             struct_kw = t.string
                             j += 1
                             continue
-                        if struct_kw and t.type == _tokenize.NAME:
-                            struct_name_idx = j
-                            j += 1
-                            continue
-                        if t.type == _tokenize.OP and t.string == ":":
+                    if struct_kw and t.type == _tokenize.NAME:
+                        struct_name_idx = j
+                        j += 1
+                        continue
+                    if t.type == _tokenize.OP and t.string == ":":
+                        if keyword == "cdef":
                             decl_type = "struct_block" if struct_kw else "block_header"
                             break
+                        if keyword == "cpdef" and struct_kw:
+                            decl_type = "struct_block"
+                            break
+                    if keyword == "cdef":
                         if t.type == _tokenize.OP and t.string == ",":
                             decl_type = "multi_variable"
                             break
@@ -433,7 +440,7 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 i += 1
                 continue
 
-            # ---- cdef struct / union / enum block header ----
+            # ---- cdef struct / union / enum / fused block header ----
             if decl_type == "struct_block" and keyword == "cdef":
                 if struct_name_idx >= 0:
                     s_start = _abs_start(tok, offsets)
@@ -441,6 +448,42 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     ph = _placeholder(struct_kw, toks[struct_name_idx].string)
                     edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
                     i = struct_name_idx + 1
+                    continue
+                # anonymous: cdef enum: (no name) — span from 'cdef' to struct keyword
+                last_kw_idx = -1
+                for kk in range(i, j):
+                    if toks[kk].type == _tokenize.NAME:
+                        last_kw_idx = kk
+                if last_kw_idx >= 0:
+                    s_start = _abs_start(tok, offsets)
+                    s_end = _abs_end(toks[last_kw_idx], offsets)
+                    ph = _placeholder("cdef", "anon", struct_kw)
+                    edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                    i = last_kw_idx + 1
+                    continue
+                i += 1
+                continue
+
+            # ---- cpdef enum [Name]: block header ----
+            if decl_type == "struct_block" and keyword == "cpdef":
+                if struct_name_idx >= 0:
+                    s_start = _abs_start(tok, offsets)
+                    s_end = _abs_end(toks[struct_name_idx], offsets)
+                    ph = _placeholder("cpdef", struct_kw, toks[struct_name_idx].string)
+                    edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                    i = struct_name_idx + 1
+                    continue
+                # anonymous cpdef enum:
+                last_kw_idx = -1
+                for kk in range(i, j):
+                    if toks[kk].type == _tokenize.NAME:
+                        last_kw_idx = kk
+                if last_kw_idx >= 0:
+                    s_start = _abs_start(tok, offsets)
+                    s_end = _abs_end(toks[last_kw_idx], offsets)
+                    ph = _placeholder("cpdef", "anon", struct_kw)
+                    edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                    i = last_kw_idx + 1
                     continue
                 i += 1
                 continue
@@ -555,6 +598,7 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     "struct",
                     "union",
                     "enum",
+                    "fused",
                 ) and not ct_struct_kw:
                     ct_struct_kw = t.string
                     k += 1

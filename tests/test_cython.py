@@ -245,6 +245,14 @@ def test_extern_anon_enum_formatting() -> None:
     assert _format_fixture("extern_anon_enum") == _expected("extern_anon_enum")
 
 
+def test_ctypedef_class_formatting() -> None:
+    """ctypedef class DOTTED_NAME [object PyType]: headers and ctypedef struct/union/enum
+    TypeName (forward declarations without body) are masked, formatted, and restored.
+    Phase 2 Step 19.
+    """
+    assert _format_fixture("ctypedef_class") == _expected("ctypedef_class")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect

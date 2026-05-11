@@ -459,23 +459,20 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 i = j
                 continue
 
-            # ---- cdef: compound block header ----
-            # j == i + 1 means ':' was the very next token after 'cdef' (bare cdef:)
-            # rather than 'cdef extern from "x":' or other compound forms.
+            # ---- cdef: compound block header (bare or qualified) ----
+            # Handles 'cdef:', 'cdef readonly:', 'cdef public:' etc.
+            # j points at ':'; toks[j-1] is the last qualifier (or 'cdef' itself).
             if (
                 decl_type == "block_header"
                 and keyword == "cdef"
                 and not struct_kw
-                and j == i + 1
             ):
-                # 'cdef:' with an indented body of bare declarations.
-                # Replace 'cdef' → 'if __cy_cdef_block' so the body becomes a
-                # valid Python if-block; the ':' stays in place.
+                # Replace 'cdef [qualifier...]' → 'if __cy_cdef_block'; ':' stays.
                 s_start = _abs_start(tok, offsets)
-                s_end = _abs_end(tok, offsets)
+                s_end = _abs_end(toks[j - 1], offsets)
                 ph = _placeholder("cdef", "block")
                 edits.append(_Edit(s_start, s_end, f"if {ph}", src[s_start:s_end]))
-                i += 1
+                i = j  # advance past qualifier tokens to ':'
                 continue
 
             # ---- cdef struct / union / enum / fused block header ----

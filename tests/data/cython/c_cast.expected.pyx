@@ -9,7 +9,7 @@ def cast_bytes(char *s):
 
 
 def cast_multi():
-    cdef signed char sc = <signed char>((<unsigned char> - 1) >> 1)
+    cdef signed char sc = <signed char>((<unsigned char>-1) >> 1)
     return sc
 
 

@@ -1069,6 +1069,26 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     elif (
                         nj < n
                         and toks[nj].type == _tokenize.OP
+                        and toks[nj].string in ("-", "+", "~")
+                        and nj + 1 < n
+                        and toks[nj + 1].type in (_tokenize.NAME, _tokenize.NUMBER)
+                    ):
+                        # Absorb unary op + NAME/NUMBER: <int>-1 → __cy_cast_int_neg_1
+                        # Avoids leaving '-1' as Python subtraction (which would cause
+                        # Black to insert spaces, corrupting the restored text).
+                        _unary_sfx = {"-": "neg", "+": "pos", "~": "inv"}
+                        ph_cast = _placeholder(
+                            "cast", *cast_type_parts,
+                            _unary_sfx[toks[nj].string],
+                            toks[nj + 1].string,
+                        )
+                        cast_end = _abs_end(toks[nj + 1], offsets)
+                        edits.append(_Edit(cast_start, cast_end, ph_cast, src[cast_start:cast_end]))
+                        i = nj + 2
+                        continue
+                    elif (
+                        nj < n
+                        and toks[nj].type == _tokenize.OP
                         and toks[nj].string == "&"
                         and nj + 1 < n
                         and toks[nj + 1].type == _tokenize.NAME
@@ -1083,8 +1103,9 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                         i = nj + 2
                         continue
                     else:
-                        # Mask only <type>: leaves following token as Python expression
-                        # e.g. <int>-1 → __cy_cast_int -1  (valid Python subtraction)
+                        # Last resort: mask only <type>, leaving the operand as-is.
+                        # Used for patterns we cannot fully absorb inline,
+                        # e.g. <int>-(expr) where the operand is parenthesised.
                         cast_end = _abs_end(toks[j], offsets)
                         edits.append(_Edit(cast_start, cast_end, ph_cast, src[cast_start:cast_end]))
                         i = j + 1

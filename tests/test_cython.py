@@ -340,6 +340,17 @@ def test_addrof_formatting() -> None:
     assert _format_fixture("addrof") == _expected("addrof")
 
 
+def test_cdef_extern_forward_decl_formatting() -> None:
+    """cdef/cpdef function declarations inside cdef extern from blocks (no colon,
+    no body) are masked as a single identifier-only placeholder rather than a
+    def-skeleton, so the masked source does not contain a bare 'def func(args)'
+    without a trailing colon.  Phase 2 Step 31.
+    """
+    assert _format_fixture("cdef_extern_forward_decl") == _expected(
+        "cdef_extern_forward_decl"
+    )
+
+
 def test_c_char_literal_formatting() -> None:
     """Cython C character literals c'X' are masked as __cy_char_X identifiers
     so Black can process the surrounding Python expression.  Phase 2 Step 30.

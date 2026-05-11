@@ -658,8 +658,9 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                         i = end_k
                         handled_func_ptr = True
                     break  # exit inner loop (handled or unrecognised)
-                # Skip [object PyType] bracket group in ctypedef class declarations
-                if t.type == _tokenize.OP and t.string == "[" and ct_struct_kw:
+                # Skip [...] bracket groups (memoryview slices in plain aliases,
+                # or [object PyType] in ctypedef class declarations).
+                if t.type == _tokenize.OP and t.string == "[":
                     depth = 1
                     k += 1
                     while k < n and depth > 0:
@@ -669,7 +670,8 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                             elif toks[k].string == "]":
                                 depth -= 1
                         k += 1
-                    ct_bracket_end = k - 1  # index of ']'
+                    if ct_struct_kw:
+                        ct_bracket_end = k - 1  # index of ']' for class block
                     continue
                 # Skip "extern" in "ctypedef extern class"
                 if t.type == _tokenize.NAME and t.string == "extern" and not ct_struct_kw:

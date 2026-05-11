@@ -210,8 +210,19 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 if ph is not None:
                     s_start = _abs_start(tok, offsets)
                     s_end = _abs_end(tok3, offsets)
+                    next_i = i + 4  # normally points at ':'
+                    # Absorb optional 'namespace "..."' clause before ':'
+                    if (
+                        next_i < n
+                        and toks[next_i].type == _tokenize.NAME
+                        and toks[next_i].string == "namespace"
+                        and next_i + 1 < n
+                        and toks[next_i + 1].type == _tokenize.STRING
+                    ):
+                        s_end = _abs_end(toks[next_i + 1], offsets)
+                        next_i += 2
                     edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
-                    i = i + 4  # points at ':' — processed normally by main loop
+                    i = next_i  # points at ':' — processed normally by main loop
                     continue
 
             # Classify by scanning ahead for (, :, =, 'class', struct/union/enum,
@@ -302,6 +313,16 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
                         break
 
+                    # Variadic '...' argument: mask as __cy_varargs identifier
+                    if t.type == _tokenize.OP and t.string == "...":
+                        va_start = _abs_start(t, offsets)
+                        va_end = _abs_end(t, offsets)
+                        edits.append(
+                            _Edit(va_start, va_end, _placeholder("varargs"), src[va_start:va_end])
+                        )
+                        j += 1
+                        continue
+
                     # Collect one argument slot (up to , / ) / = at bracket depth 0)
                     arg_name_toks: list[str] = []
                     arg_first_idx = -1
@@ -359,7 +380,24 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     # Mask if typed (2+ NAMEs before =)
                     if len(arg_name_toks) >= 2 and arg_first_idx >= 0:
                         sa_start = _abs_start(toks[arg_first_idx], offsets)
-                        sa_end = _abs_end(toks[arg_last_idx], offsets)
+                        # Absorb trailing [] suffix (e.g. 'char msg[]' → one placeholder)
+                        arr_end = arg_last_idx
+                        if (
+                            arg_last_idx + 1 < n
+                            and toks[arg_last_idx + 1].type == _tokenize.OP
+                            and toks[arg_last_idx + 1].string == "["
+                        ):
+                            depth = 1
+                            arr_k = arg_last_idx + 2
+                            while arr_k < n and depth > 0:
+                                if toks[arr_k].type == _tokenize.OP:
+                                    if toks[arr_k].string == "[":
+                                        depth += 1
+                                    elif toks[arr_k].string == "]":
+                                        depth -= 1
+                                arr_k += 1
+                            arr_end = arr_k - 1  # index of ']'
+                        sa_end = _abs_end(toks[arr_end], offsets)
                         ph_arg = _placeholder(*arg_name_toks)
                         edits.append(_Edit(sa_start, sa_end, ph_arg, src[sa_start:sa_end]))
 
@@ -581,6 +619,7 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             ct_struct_kw = ""       # "struct" / "union" / "enum" / "class" / "fused" if present
             ct_struct_name_idx = -1  # last NAME before '[' or ':' after struct kw
             ct_bracket_end = -1     # index of ']' in [object ...] group, if any
+            handled_func_ptr = False
             k = i + 1
             while k < n:
                 t = toks[k]
@@ -594,7 +633,34 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     saw_colon = True
                     break
                 if t.type == _tokenize.OP and t.string == "(":
-                    break  # function pointer — leave unmasked
+                    # Function pointer: ctypedef RETURN_TYPE (*name)(args) [postfixes]
+                    # Pattern: ( * NAME )
+                    if (
+                        k + 1 < n
+                        and toks[k + 1].type == _tokenize.OP
+                        and toks[k + 1].string == "*"
+                        and k + 2 < n
+                        and toks[k + 2].type == _tokenize.NAME
+                    ):
+                        func_name = toks[k + 2].string
+                        # Absorb entire declaration to end of logical line
+                        end_k = k
+                        while end_k < n and toks[end_k].type not in (
+                            _tokenize.NEWLINE,
+                            _tokenize.ENDMARKER,
+                            _tokenize.COMMENT,
+                        ):
+                            end_k += 1
+                        last_k = end_k - 1
+                        span_start = _abs_start(tok, offsets)  # tok = 'ctypedef'
+                        span_end = _abs_end(toks[last_k], offsets)
+                        ph = _placeholder("ctypedef", func_name)
+                        edits.append(
+                            _Edit(span_start, span_end, ph, src[span_start:span_end])
+                        )
+                        i = end_k
+                        handled_func_ptr = True
+                    break  # exit inner loop (handled or unrecognised)
                 # Skip [object PyType] bracket group in ctypedef class declarations
                 if t.type == _tokenize.OP and t.string == "[" and ct_struct_kw:
                     depth = 1
@@ -629,6 +695,10 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     if ct_struct_kw and ct_bracket_end < 0:
                         ct_struct_name_idx = k
                 k += 1
+
+            # Function pointer form already handled inside the inner loop
+            if handled_func_ptr:
+                continue
 
             # ctypedef struct/union/enum/class Name: block header
             if saw_colon and ct_struct_kw and ct_struct_name_idx >= 0:
@@ -748,7 +818,24 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
 
                     if len(def_arg_toks) >= 2 and def_arg_first >= 0:
                         sa_start = _abs_start(toks[def_arg_first], offsets)
-                        sa_end = _abs_end(toks[def_arg_last], offsets)
+                        # Absorb trailing [] suffix (e.g. 'const char a[]' → one placeholder)
+                        def_arr_end = def_arg_last
+                        if (
+                            def_arg_last + 1 < n
+                            and toks[def_arg_last + 1].type == _tokenize.OP
+                            and toks[def_arg_last + 1].string == "["
+                        ):
+                            depth = 1
+                            arr_k = def_arg_last + 2
+                            while arr_k < n and depth > 0:
+                                if toks[arr_k].type == _tokenize.OP:
+                                    if toks[arr_k].string == "[":
+                                        depth += 1
+                                    elif toks[arr_k].string == "]":
+                                        depth -= 1
+                                arr_k += 1
+                            def_arr_end = arr_k - 1  # index of ']'
+                        sa_end = _abs_end(toks[def_arr_end], offsets)
                         ph_arg = _placeholder(*def_arg_toks)
                         edits.append(
                             _Edit(sa_start, sa_end, ph_arg, src[sa_start:sa_end])
@@ -765,6 +852,47 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 i = j
             else:
                 i += 1
+            continue
+
+        # ---- Cython for-from loop: for VAR from BOUNDS [by STEP]: ----
+        # 'for VAR from ...' is invalid Python; replace 'from BOUNDS [by STEP]'
+        # with 'in __cy_for_from_VAR' so the loop header becomes a valid Python
+        # for-in statement and the indented body is left intact.
+        if (
+            tok.type == _tokenize.NAME
+            and tok.string == "for"
+            and i + 2 < n
+            and toks[i + 1].type == _tokenize.NAME
+            and toks[i + 2].type == _tokenize.NAME
+            and toks[i + 2].string == "from"
+        ):
+            loop_var = toks[i + 1].string
+            from_tok = toks[i + 2]
+            # Find the ':' ending the for-from header (track bracket depth)
+            colon_idx = -1
+            j = i + 3
+            bdepth = 0
+            while j < n:
+                t = toks[j]
+                if t.type in (_tokenize.NEWLINE, _tokenize.ENDMARKER):
+                    break
+                if t.type == _tokenize.OP and t.string in ("(", "[", "{"):
+                    bdepth += 1
+                elif t.type == _tokenize.OP and t.string in (")", "]", "}"):
+                    bdepth -= 1
+                elif t.type == _tokenize.OP and t.string == ":" and bdepth == 0:
+                    colon_idx = j
+                    break
+                j += 1
+            if colon_idx >= 0:
+                # span: from 'from' to the token just before ':'
+                s_start = _abs_start(from_tok, offsets)
+                s_end = _abs_end(toks[colon_idx - 1], offsets)
+                ph = _placeholder("for", "from", loop_var)
+                edits.append(_Edit(s_start, s_end, f"in {ph}", src[s_start:s_end]))
+                i = colon_idx + 1
+                continue
+            i += 1
             continue
 
         # ---- bare TYPE NAME declaration (struct/union/enum body, no cdef prefix) ----

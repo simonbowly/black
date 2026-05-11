@@ -1145,6 +1145,27 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     continue
                 # else: & in some unrecognised unary context — leave unmasked
 
+        # ---- Cython C character literal: c'X' ----
+        # In Cython, c'x' is a C-level character literal.  It tokenizes as NAME 'c'
+        # immediately adjacent to STRING (no whitespace), e.g. c'\0', c'A', c'\x10'.
+        # NAME STRING adjacency without an operator is not valid Python.
+        if (
+            tok.type == _tokenize.NAME
+            and tok.string == "c"
+            and i + 1 < n
+            and toks[i + 1].type == _tokenize.STRING
+            and toks[i + 1].string[0] in ("'", '"')
+            and toks[i + 1].start == (tok.start[0], tok.end[1])  # immediately adjacent
+        ):
+            str_tok = toks[i + 1]
+            raw_content = str_tok.string.strip("'\"")
+            ph = _placeholder("char", raw_content)
+            cl_start = _abs_start(tok, offsets)
+            cl_end = _abs_end(str_tok, offsets)
+            edits.append(_Edit(cl_start, cl_end, ph, src[cl_start:cl_end]))
+            i += 2
+            continue
+
         # ---- bare TYPE NAME declaration (struct/union/enum body, no cdef prefix) ----
         # Two adjacent non-keyword NAME tokens on the same source line cannot be valid
         # Python — they must be a Cython bare type declaration (struct/enum body).

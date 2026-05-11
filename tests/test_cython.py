@@ -318,6 +318,28 @@ def test_paren_return_type_formatting() -> None:
     assert _format_fixture("paren_return_type") == _expected("paren_return_type")
 
 
+def test_c_cast_formatting() -> None:
+    """C-style cast expressions <TYPE>EXPR are masked, formatted, and restored.
+
+    NAME absorption: <int>x → __cy_cast_int_x.
+    Function-call form: <double>(expr) → __cy_cast_double(expr).
+    Minus form: <unsigned char>-1 → __cy_cast_unsigned_char -1 (valid subtraction).
+    String absorption: <char>'A' → __cy_cast_char.
+    Phase 2 Step 28.
+    """
+    assert _format_fixture("c_cast") == _expected("c_cast")
+
+
+def test_addrof_formatting() -> None:
+    """Address-of operator &VAR and &(EXPR) are masked, formatted, and restored.
+
+    Name absorption: &x → __cy_addrof_x (attribute access .attr follows naturally).
+    Paren form: &(expr) → __cy_addrof(expr).
+    Phase 2 Step 28.
+    """
+    assert _format_fixture("addrof") == _expected("addrof")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect

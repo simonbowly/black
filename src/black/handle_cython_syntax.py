@@ -55,6 +55,55 @@ def _abs_end(tok: _tokenize.TokenInfo, offsets: list[int]) -> int:
     return offsets[row - 1] + col
 
 
+def _prev_significant(
+    toks: list[_tokenize.TokenInfo], i: int
+) -> _tokenize.TokenInfo | None:
+    """Return the last non-whitespace token before index i, or None.
+
+    NEWLINE is intentionally NOT skipped: it marks the start of a new
+    logical line, and _is_unary_position needs to see it.
+    """
+    for k in range(i - 1, -1, -1):
+        t = toks[k]
+        if t.type not in (
+            _tokenize.NL,
+            _tokenize.INDENT,
+            _tokenize.DEDENT,
+            _tokenize.COMMENT,
+            _tokenize.ENCODING,
+        ):
+            return t
+    return None
+
+
+def _is_unary_position(prev_sig: _tokenize.TokenInfo | None) -> bool:
+    """Return True if a unary prefix operator (C cast <type> or &) is valid here."""
+    if prev_sig is None:
+        return True
+    t = prev_sig
+    # Start of a new logical line: always unary context.
+    if t.type == _tokenize.NEWLINE:
+        return True
+    # After a closing bracket: 'x[0]<int>' is comparison, 'x()&y' is bitwise-and
+    if t.type == _tokenize.OP and t.string in (")", "]", "}"):
+        return False
+    # After a literal: 'x<int>' is comparison, '1&y' is bitwise-and
+    if t.type in (_tokenize.NUMBER, _tokenize.STRING):
+        return False
+    if t.type == _tokenize.NAME:
+        if t.string in ("True", "False", "None"):
+            return False
+        # Keywords like 'return', 'and', 'or', 'not', 'yield', 'if', 'else'
+        # all signal an expression-start (unary) context.
+        if _keyword.iskeyword(t.string):
+            return True
+        # Regular identifier (variable, function name) — binary context.
+        return False
+    # Any OP that is not a closing bracket means unary context
+    # (opening brackets, arithmetic operators, comparison ops, assignment, etc.)
+    return True
+
+
 def _tokenize_src(src: str) -> list[_tokenize.TokenInfo]:
     toks: list[_tokenize.TokenInfo] = []
     try:
@@ -931,6 +980,141 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 continue
             i += 1
             continue
+
+        # ---- C cast: <TYPE>EXPR ----
+        # Detected when '<' appears in unary/expression-start position.
+        # Forms:
+        #   <int>x        → absorb NAME   → __cy_cast_int_x
+        #   <double>3.14  → absorb NUMBER → __cy_cast_double_3_14
+        #   <char>'>'     → absorb STRING → __cy_cast_char
+        #   <int>(expr)   → func-call form → __cy_cast_int  (leaves (expr) intact)
+        #   <int>-1       → mask only     → __cy_cast_int  (leaves -1 as subtraction)
+        if tok.type == _tokenize.OP and tok.string == "<":
+            prev_sig = _prev_significant(toks, i)
+            if _is_unary_position(prev_sig):
+                # Scan forward: accept NAME and '*' tokens until '>'
+                cast_type_parts: list[str] = []
+                j = i + 1
+                is_cast = False
+                while j < n:
+                    ct = toks[j]
+                    if ct.type == _tokenize.NAME:
+                        cast_type_parts.append(ct.string)
+                        j += 1
+                        continue
+                    if ct.type == _tokenize.OP and ct.string == "*":
+                        cast_type_parts.append("star")
+                        j += 1
+                        continue
+                    if ct.type == _tokenize.OP and ct.string == "**":
+                        # double-pointer type like <void**>
+                        cast_type_parts.append("starstar")
+                        j += 1
+                        continue
+                    if ct.type == _tokenize.OP and ct.string == "?":
+                        # Cython checked cast: <Foo?>x
+                        cast_type_parts.append("q")
+                        j += 1
+                        continue
+                    if ct.type == _tokenize.OP and ct.string == "[":
+                        # Memoryview slice type: <int[:n]> or <long[:1:1]>
+                        # Skip the balanced [...] group.
+                        cast_type_parts.append("slice")
+                        bracket_d = 1
+                        j += 1
+                        while j < n and bracket_d > 0:
+                            if toks[j].type == _tokenize.OP:
+                                if toks[j].string == "[":
+                                    bracket_d += 1
+                                elif toks[j].string == "]":
+                                    bracket_d -= 1
+                            j += 1
+                        continue
+                    if ct.type == _tokenize.OP and ct.string == ">" and cast_type_parts:
+                        is_cast = True
+                        break
+                    break  # any other token: not a C cast
+
+                if is_cast:
+                    # j is the index of '>'
+                    ph_cast = _placeholder("cast", *cast_type_parts)
+                    nj = j + 1  # token immediately after '>'
+                    cast_start = _abs_start(tok, offsets)
+                    if nj < n and toks[nj].type == _tokenize.NAME:
+                        # Absorb trailing NAME: <int>x → __cy_cast_int_x
+                        ph_cast = _placeholder("cast", *cast_type_parts, toks[nj].string)
+                        cast_end = _abs_end(toks[nj], offsets)
+                        edits.append(_Edit(cast_start, cast_end, ph_cast, src[cast_start:cast_end]))
+                        i = nj + 1
+                        continue
+                    elif nj < n and toks[nj].type == _tokenize.NUMBER:
+                        # Absorb trailing NUMBER: <double>3.14 → __cy_cast_double_3_14
+                        ph_cast = _placeholder("cast", *cast_type_parts, toks[nj].string)
+                        cast_end = _abs_end(toks[nj], offsets)
+                        edits.append(_Edit(cast_start, cast_end, ph_cast, src[cast_start:cast_end]))
+                        i = nj + 1
+                        continue
+                    elif nj < n and toks[nj].type == _tokenize.STRING:
+                        # Absorb trailing STRING: <char>'>' → __cy_cast_char
+                        cast_end = _abs_end(toks[nj], offsets)
+                        edits.append(_Edit(cast_start, cast_end, ph_cast, src[cast_start:cast_end]))
+                        i = nj + 1
+                        continue
+                    elif nj < n and toks[nj].type == _tokenize.OP and toks[nj].string == "(":
+                        # Function-call form: <int>(expr) → __cy_cast_int(expr)
+                        cast_end = _abs_end(toks[j], offsets)
+                        edits.append(_Edit(cast_start, cast_end, ph_cast, src[cast_start:cast_end]))
+                        i = j + 1
+                        continue
+                    elif (
+                        nj < n
+                        and toks[nj].type == _tokenize.OP
+                        and toks[nj].string == "&"
+                        and nj + 1 < n
+                        and toks[nj + 1].type == _tokenize.NAME
+                    ):
+                        # <type>&name → absorb both into one placeholder so the
+                        # masked source stays valid Python (two adjacent identifiers
+                        # would be a syntax error).
+                        ao_name = toks[nj + 1].string
+                        ph_cast = _placeholder("cast", *cast_type_parts, "addrof", ao_name)
+                        cast_end = _abs_end(toks[nj + 1], offsets)
+                        edits.append(_Edit(cast_start, cast_end, ph_cast, src[cast_start:cast_end]))
+                        i = nj + 2
+                        continue
+                    else:
+                        # Mask only <type>: leaves following token as Python expression
+                        # e.g. <int>-1 → __cy_cast_int -1  (valid Python subtraction)
+                        cast_end = _abs_end(toks[j], offsets)
+                        edits.append(_Edit(cast_start, cast_end, ph_cast, src[cast_start:cast_end]))
+                        i = j + 1
+                        continue
+
+        # ---- address-of: &VAR or &(EXPR) ----
+        # Detected when '&' appears in unary/expression-start position.
+        # Forms:
+        #   &x        → absorb NAME → __cy_addrof_x  (attr access .attr follows naturally)
+        #   &(expr)   → func-call form → __cy_addrof(expr)
+        if tok.type == _tokenize.OP and tok.string == "&":
+            prev_sig = _prev_significant(toks, i)
+            if _is_unary_position(prev_sig):
+                nj = i + 1
+                ao_start = _abs_start(tok, offsets)
+                if nj < n and toks[nj].type == _tokenize.NAME:
+                    # Absorb: &x → __cy_addrof_x
+                    ph_ao = _placeholder("addrof", toks[nj].string)
+                    ao_end = _abs_end(toks[nj], offsets)
+                    edits.append(_Edit(ao_start, ao_end, ph_ao, src[ao_start:ao_end]))
+                    i = nj + 1
+                    continue
+                elif nj < n and toks[nj].type == _tokenize.OP and toks[nj].string == "(":
+                    # Function-call form: &(expr) → __cy_addrof(expr)
+                    ph_ao = _placeholder("addrof")
+                    ao_end = _abs_end(tok, offsets)
+                    edits.append(_Edit(ao_start, ao_end, ph_ao, src[ao_start:ao_end]))
+                    i = nj
+                    continue
+                # else: & in some unrecognised unary context — leave unmasked
 
         # ---- bare TYPE NAME declaration (struct/union/enum body, no cdef prefix) ----
         # Two adjacent non-keyword NAME tokens on the same source line cannot be valid

@@ -150,15 +150,16 @@ def test_pure_python_pyx_reformats(tmp_path: Path) -> None:
 #   Phase 2 Step 23: ctypedef func-ptr handled; test moved to Cython for-from loop.
 #   Phase 2 Step 24: for-from loop handled; test moved to body-level C cast.
 #   Phase 2 Step 28: C cast expressions handled; test moved to forward declaration.
+#   Phase 2 Step 31: forward declarations handled; test moved to sizeof(void*).
 def test_cython_syntax_pyx_raises_for_unhandled_construct(tmp_path: Path) -> None:
     """format_file_in_place on a .pyx with an unhandled cdef construct raises."""
     pyx_file = tmp_path / "cython_syntax.pyx"
-    # Forward declaration in cdef extern body (no colon/body): the masker emits
-    # 'def __cy_double_sqrt(double)' — no trailing colon — which lib2to3 rejects.
-    # Will flip when forward-declaration masking lands.
-    pyx_file.write_text('cdef extern from "math.h":\n    cdef double sqrt(double)\n')
+    # sizeof() with a C pointer type: 'sizeof(void*)' tokenizes as NAME '(' NAME '*'
+    # ')' — the '*' without a right operand in binary position is rejected by
+    # lib2to3.  Will flip when body-level sizeof / C-pointer-type masking lands.
+    pyx_file.write_text("cdef void foo():\n    x = sizeof(void*)\n")
 
-    # Parser rejects the incomplete def-without-colon as invalid Python.
+    # Parser rejects 'void*' (binary * without right operand) as invalid Python.
     with pytest.raises(black.parsing.InvalidInput):
         black.format_file_in_place(
             pyx_file,

@@ -368,6 +368,11 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     i += 1  # no name before ( — leave unmasked
                     continue
 
+                # Remember current edit count so we can roll back speculative
+                # function-skeleton edits if this turns out to be a forward
+                # declaration (no body colon, e.g. inside cdef extern from blocks).
+                pre_func_edits = len(edits)
+
                 # Span 1: keyword … function-name → 'def __cy_...'
                 s1_start = _abs_start(tok, offsets)
                 s1_end = _abs_end(toks[last_hdr_idx], offsets)
@@ -544,6 +549,29 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     masked_pf = f"):  # {ph_pf}"
                     edits.append(_Edit(pf_start, pf_end, masked_pf, src[pf_start:pf_end]))
                     j = colon_idx + 1
+
+                # Forward declaration: no colon found after ')' (e.g. a function
+                # declaration inside a cdef extern from block).  Roll back the
+                # speculative function-skeleton edits and emit a single identifier
+                # placeholder covering the whole declaration.
+                if colon_idx < 0 and not has_except_plus:
+                    del edits[pre_func_edits:]
+                    # Find the last significant token before NEWLINE.
+                    # pk is at NEWLINE or ENDMARKER after the postfix scan.
+                    end_k = pk - 1
+                    while end_k > i and toks[end_k].type in (
+                        _tokenize.NL,
+                        _tokenize.COMMENT,
+                        _tokenize.INDENT,
+                        _tokenize.DEDENT,
+                        _tokenize.NEWLINE,
+                        _tokenize.ENDMARKER,
+                    ):
+                        end_k -= 1
+                    fd_start = _abs_start(tok, offsets)
+                    fd_end = _abs_end(toks[end_k], offsets)
+                    ph_fd = _placeholder(*hdr_name_toks)
+                    edits.append(_Edit(fd_start, fd_end, ph_fd, src[fd_start:fd_end]))
 
                 # Advance i past ) and : to the start of the next logical line
                 while j < n:

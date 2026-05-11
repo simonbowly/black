@@ -247,6 +247,20 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     continue
                 if bracket_depth == 0:
                     if t.type == _tokenize.OP and t.string == "(":
+                        if j == i + 1:
+                            # Parenthesized return type immediately after keyword
+                            # (e.g. 'cdef (int, double)' or 'cpdef (char*)').
+                            # Skip to the matching ')' and continue classifying.
+                            paren_depth_rt = 1
+                            j += 1
+                            while j < n and paren_depth_rt > 0:
+                                if toks[j].type == _tokenize.OP:
+                                    if toks[j].string == "(":
+                                        paren_depth_rt += 1
+                                    elif toks[j].string == ")":
+                                        paren_depth_rt -= 1
+                                j += 1
+                            continue
                         open_paren_idx = j
                         decl_type = "function"
                         break
@@ -328,6 +342,8 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     arg_first_idx = -1
                     arg_last_idx = -1
                     arg_brk_depth = 0
+                    arg_paren_depth = 0
+                    arg_slot_start = j  # first token index of this arg slot
                     k = j
                     while k < n:
                         t2 = toks[k]
@@ -339,10 +355,24 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                             arg_brk_depth -= 1
                             k += 1
                             continue
+                        # Track ( ) depth for tuple-typed args like '(int, double) x'
+                        if t2.type == _tokenize.OP and t2.string == "(":
+                            arg_paren_depth += 1
+                            k += 1
+                            continue
+                        if t2.type == _tokenize.OP and t2.string == ")":
+                            if arg_paren_depth > 0:
+                                arg_paren_depth -= 1
+                                k += 1
+                                continue
+                            break  # end of arg list at paren depth 0
                         if arg_brk_depth > 0:
                             k += 1
                             continue
-                        if t2.type == _tokenize.OP and t2.string in (",", ")"):
+                        if t2.type == _tokenize.OP and t2.string == ",":
+                            if arg_paren_depth > 0:
+                                k += 1
+                                continue  # comma inside tuple type, not an arg separator
                             break
                         if t2.type == _tokenize.OP and t2.string == "=":
                             break  # default value
@@ -379,7 +409,15 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
 
                     # Mask if typed (2+ NAMEs before =)
                     if len(arg_name_toks) >= 2 and arg_first_idx >= 0:
-                        sa_start = _abs_start(toks[arg_first_idx], offsets)
+                        # If the slot starts with '(' (tuple type like '(int, double) x'),
+                        # include the opening '(' in the replacement span.
+                        if (
+                            toks[arg_slot_start].type == _tokenize.OP
+                            and toks[arg_slot_start].string == "("
+                        ):
+                            sa_start = _abs_start(toks[arg_slot_start], offsets)
+                        else:
+                            sa_start = _abs_start(toks[arg_first_idx], offsets)
                         # Absorb trailing [] suffix (e.g. 'char msg[]' → one placeholder)
                         arr_end = arg_last_idx
                         if (

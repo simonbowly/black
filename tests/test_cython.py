@@ -340,6 +340,15 @@ def test_addrof_formatting() -> None:
     assert _format_fixture("addrof") == _expected("addrof")
 
 
+def test_cdef_extern_nogil_formatting() -> None:
+    """cdef extern from "h" nogil: and cdef extern from * namespace "ns" nogil:
+    headers absorb the trailing nogil qualifier into the placeholder span so it
+    does not leak into the masked Python as 'class __cy_extern_X nogil:'.
+    Phase 2 Step 29.
+    """
+    assert _format_fixture("cdef_extern_nogil") == _expected("cdef_extern_nogil")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect

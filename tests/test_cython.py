@@ -293,6 +293,14 @@ def test_for_from_formatting() -> None:
     assert _format_fixture("for_from") == _expected("for_from")
 
 
+def test_cdef_qualified_block_formatting() -> None:
+    """cdef readonly: and cdef public: block headers (qualified cdef blocks)
+    are masked as 'if __cy_cdef_block:', formatted, and restored.
+    Phase 2 Step 25.
+    """
+    assert _format_fixture("cdef_qualified_block") == _expected("cdef_qualified_block")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect

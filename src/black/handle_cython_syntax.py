@@ -270,6 +270,14 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     ):
                         s_end = _abs_end(toks[next_i + 1], offsets)
                         next_i += 2
+                    # Absorb optional 'nogil' qualifier before ':'
+                    if (
+                        next_i < n
+                        and toks[next_i].type == _tokenize.NAME
+                        and toks[next_i].string == "nogil"
+                    ):
+                        s_end = _abs_end(toks[next_i], offsets)
+                        next_i += 1
                     edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
                     i = next_i  # points at ':' — processed normally by main loop
                     continue

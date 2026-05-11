@@ -253,6 +253,46 @@ def test_ctypedef_class_formatting() -> None:
     assert _format_fixture("ctypedef_class") == _expected("ctypedef_class")
 
 
+def test_cdef_extern_namespace_formatting() -> None:
+    """cdef extern from "h" namespace "ns": and cdef extern from * namespace "ns":
+    headers absorb the optional namespace clause into the placeholder span.
+    Phase 2 Step 20.
+    """
+    assert _format_fixture("cdef_extern_namespace") == _expected("cdef_extern_namespace")
+
+
+def test_array_typed_arg_formatting() -> None:
+    """Array-typed args like 'char msg[]' and 'const char a[]' must absorb the
+    trailing [] into the placeholder span so the masked source is valid Python.
+    Phase 2 Step 21.
+    """
+    assert _format_fixture("array_arg") == _expected("array_arg")
+
+
+def test_vararg_formatting() -> None:
+    """Variadic '...' args in cdef/def parameter lists must be masked as
+    __cy_varargs so the masked source is valid Python (bare '...' in a parameter
+    list is invalid Python).  Phase 2 Step 22.
+    """
+    assert _format_fixture("vararg") == _expected("vararg")
+
+
+def test_ctypedef_funcptr_formatting() -> None:
+    """ctypedef RETURN_TYPE (*name)(args) function-pointer typedefs are masked
+    as a single identifier-only placeholder spanning the whole declaration.
+    Phase 2 Step 23.
+    """
+    assert _format_fixture("ctypedef_funcptr") == _expected("ctypedef_funcptr")
+
+
+def test_for_from_formatting() -> None:
+    """Cython 'for VAR from BOUNDS [by STEP]:' loops are masked by replacing
+    'from BOUNDS [by STEP]' with 'in __cy_for_from_VAR' so Black sees a valid
+    Python for-in loop.  Phase 2 Step 24.
+    """
+    assert _format_fixture("for_from") == _expected("for_from")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect

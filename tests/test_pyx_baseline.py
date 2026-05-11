@@ -147,14 +147,16 @@ def test_pure_python_pyx_reformats(tmp_path: Path) -> None:
 #   Phase 2 Step 9: ctypedef/cdef struct blocks handled; test moved to cdef extern.
 #   Phase 2 Step 11: cdef extern from blocks handled; test moved to ctypedef fused.
 #   Phase 2 Step 16: ctypedef fused blocks handled; test moved to ctypedef func-ptr.
+#   Phase 2 Step 23: ctypedef func-ptr handled; test moved to Cython for-from loop.
+#   Phase 2 Step 24: for-from loop handled; test moved to body-level C cast.
 def test_cython_syntax_pyx_raises_for_unhandled_construct(tmp_path: Path) -> None:
     """format_file_in_place on a .pyx with an unhandled cdef construct raises."""
     pyx_file = tmp_path / "cython_syntax.pyx"
-    # ctypedef function pointer: masker breaks on '(' and leaves ctypedef unmasked.
-    pyx_file.write_text("ctypedef int (*func_t)(int a, int b)\n")
+    # Body-level C cast '<type>expr': not yet handled by the masker.
+    pyx_file.write_text("cdef void foo():\n    x = <int>y\n")
 
-    # Post-masking sanity check raises NotImplementedError for unmasked cdef.
-    with pytest.raises(NotImplementedError):
+    # Parser rejects the C cast syntax as invalid Python.
+    with pytest.raises(black.parsing.InvalidInput):
         black.format_file_in_place(
             pyx_file,
             fast=True,

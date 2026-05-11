@@ -309,6 +309,15 @@ def test_ctypedef_memview_formatting() -> None:
     assert _format_fixture("ctypedef_memview") == _expected("ctypedef_memview")
 
 
+def test_paren_return_type_formatting() -> None:
+    """cdef/cpdef with a parenthesized return type (tuple types like
+    '(int, double)' or pointer types like '(char*)') are masked by treating
+    the '(...)' group as part of the return-type expression and absorbing it
+    into the function-header placeholder span.  Phase 2 Step 27.
+    """
+    assert _format_fixture("paren_return_type") == _expected("paren_return_type")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect

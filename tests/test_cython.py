@@ -301,6 +301,14 @@ def test_cdef_qualified_block_formatting() -> None:
     assert _format_fixture("cdef_qualified_block") == _expected("cdef_qualified_block")
 
 
+def test_ctypedef_memview_formatting() -> None:
+    """ctypedef TYPE[:, ::1] ALIAS memoryview typedefs are masked as a single
+    identifier-only placeholder spanning the full declaration.
+    Phase 2 Step 26.
+    """
+    assert _format_fixture("ctypedef_memview") == _expected("ctypedef_memview")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect

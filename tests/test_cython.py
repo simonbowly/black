@@ -367,6 +367,32 @@ def test_cdef_extern_nogil_formatting() -> None:
     assert _format_fixture("cdef_extern_nogil") == _expected("cdef_extern_nogil")
 
 
+def test_cdef_array_types_formatting() -> None:
+    """Array-typed struct members (MyStruct[2] b), multi-dimensional function
+    parameters (int x[2][2]), and array-sized variables (cdef int a[N]) are masked
+    as single placeholder identifiers.  Phase 2 Step 35.
+    """
+    assert _format_fixture("cdef_array_types") == _expected("cdef_array_types")
+
+
+def test_cdef_class_forward_decl_formatting() -> None:
+    """'cdef class Foo' without a body (forward declaration) is masked as a bare
+    identifier rather than 'class __cy_class_Foo' (which is missing its ':').
+    Phase 2 Step 36.
+    """
+    assert _format_fixture("cdef_class_forward_decl") == _expected(
+        "cdef_class_forward_decl"
+    )
+
+
+def test_sizeof_ptr_formatting() -> None:
+    """sizeof(T*) / sizeof(T**) masks the preceding NAME together with the pointer
+    OP token(s) when '*' is followed by ')' or ',' (no right operand possible).
+    Phase 2 Step 37.
+    """
+    assert _format_fixture("sizeof_ptr") == _expected("sizeof_ptr")
+
+
 def test_cimport_multiline_formatting() -> None:
     """Multi-line 'from X cimport (\\n    a, b,\\n)' forms are handled by tracking
     parenthesis depth in the cimport name-collection loop so the closing ')' is

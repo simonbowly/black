@@ -507,15 +507,15 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                             sa_start = _abs_start(toks[arg_slot_start], offsets)
                         else:
                             sa_start = _abs_start(toks[arg_first_idx], offsets)
-                        # Absorb trailing [] suffix (e.g. 'char msg[]' → one placeholder)
+                        # Absorb trailing [] suffixes (e.g. 'int x[2][2]' → one placeholder)
                         arr_end = arg_last_idx
-                        if (
-                            arg_last_idx + 1 < n
-                            and toks[arg_last_idx + 1].type == _tokenize.OP
-                            and toks[arg_last_idx + 1].string == "["
+                        while (
+                            arr_end + 1 < n
+                            and toks[arr_end + 1].type == _tokenize.OP
+                            and toks[arr_end + 1].string == "["
                         ):
                             depth = 1
-                            arr_k = arg_last_idx + 2
+                            arr_k = arr_end + 2
                             while arr_k < n and depth > 0:
                                 if toks[arr_k].type == _tokenize.OP:
                                     if toks[arr_k].string == "[":
@@ -689,7 +689,21 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     s_start = _abs_start(tok, offsets)
                     s_end = _abs_end(toks[class_name_idx], offsets)
                     ph = _placeholder("class", toks[class_name_idx].string)
-                    edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                    # Check if a ':' follows (body) or end-of-line (forward declaration)
+                    has_colon = False
+                    ck = class_name_idx + 1
+                    while ck < n and toks[ck].type not in (
+                        _tokenize.NEWLINE, _tokenize.ENDMARKER,
+                    ):
+                        if toks[ck].type == _tokenize.OP and toks[ck].string == ":":
+                            has_colon = True
+                            break
+                        ck += 1
+                    if has_colon:
+                        edits.append(_Edit(s_start, s_end, f"class {ph}", src[s_start:s_end]))
+                    else:
+                        # Forward declaration: emit as plain identifier, not class statement
+                        edits.append(_Edit(s_start, s_end, ph, src[s_start:s_end]))
                     i = class_name_idx + 1
                     continue
                 i += 1
@@ -699,6 +713,7 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             if decl_type == "variable" and keyword == "cdef":
                 name_toks: list[str] = []
                 last_name_idx = -1
+                last_tok_idx = -1
                 k = i + 1
                 while k < n:
                     t = toks[k]
@@ -710,6 +725,10 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                         break
                     if t.type == _tokenize.OP and t.string == "=":
                         break
+                    if t.type not in (
+                        _tokenize.NL, _tokenize.INDENT, _tokenize.DEDENT,
+                    ):
+                        last_tok_idx = k
                     if t.type == _tokenize.NAME:
                         name_toks.append(t.string)
                         last_name_idx = k
@@ -717,7 +736,8 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
 
                 if last_name_idx >= 0 and len(name_toks) >= 1:
                     span_start = _abs_start(tok, offsets)
-                    span_end = _abs_end(toks[last_name_idx], offsets)
+                    # Use last_tok_idx so trailing ']' from e.g. 'cdef int a[N]' is included
+                    span_end = _abs_end(toks[last_tok_idx], offsets)
                     ph = _placeholder(*name_toks)
                     edits.append(_Edit(span_start, span_end, ph, src[span_start:span_end]))
                     i = k
@@ -1214,6 +1234,42 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                     continue
                 # else: & in some unrecognised unary context — leave unmasked
 
+        # ---- C pointer type: NAME* / NAME** in sizeof/typeof argument position ----
+        # 'sizeof(void*)' tokenizes as NAME('void') OP('*') OP(')').
+        # The '*' has no right operand so lib2to3 rejects the expression.
+        # Note: '**' is a single token; count stars from its length.
+        # Mask the preceding NAME together with the pointer token(s) when they are
+        # followed by ')' or ',' — i.e. when '*' cannot be binary multiplication.
+        if (
+            tok.type == _tokenize.OP
+            and all(c == "*" for c in tok.string)
+            and len(tok.string) >= 1
+            and i + 1 < n
+            and toks[i + 1].type == _tokenize.OP
+            and toks[i + 1].string in (")", ",", "*", "**", "[")
+        ):
+            prev_sig = _prev_significant(toks, i)
+            if (
+                prev_sig is not None
+                and prev_sig.type == _tokenize.NAME
+                and not _keyword.iskeyword(prev_sig.string)
+            ):
+                # Absorb consecutive pointer tokens (*, **, *, **…) after the NAME
+                star_count = 0
+                sk = i
+                while sk < n and toks[sk].type == _tokenize.OP and all(
+                    c == "*" for c in toks[sk].string
+                ):
+                    star_count += len(toks[sk].string)
+                    sk += 1
+                ptr_start = _abs_start(prev_sig, offsets)
+                ptr_end = _abs_end(toks[sk - 1], offsets)
+                ptr_parts = ["ptr"] * star_count + [prev_sig.string]
+                ph_ptr = _placeholder(*ptr_parts)
+                edits.append(_Edit(ptr_start, ptr_end, ph_ptr, src[ptr_start:ptr_end]))
+                i = sk
+                continue
+
         # ---- Cython C character literal: c'X' ----
         # In Cython, c'x' is a C-level character literal.  It tokenizes as NAME 'c'
         # immediately adjacent to STRING (no whitespace), e.g. c'\0', c'A', c'\x10'.
@@ -1255,6 +1311,43 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             edits.append(_Edit(r_start, r_end, ph, src[r_start:r_end]))
             i += 2
             continue
+
+        # ---- bare TYPE[N] NAME declaration (array member in struct/extern body) ----
+        # 'MyStruct[2] b' is not valid Python (subscript-expr followed by NAME).
+        # Detect NAME '[' EXPR ']' NAME on the same line and mask as one placeholder.
+        if (
+            tok.type == _tokenize.NAME
+            and not _keyword.iskeyword(tok.string)
+            and tok.string not in _bare_excl
+            and i + 1 < n
+            and toks[i + 1].type == _tokenize.OP
+            and toks[i + 1].string == "["
+            and toks[i + 1].start[0] == tok.start[0]
+        ):
+            # Find matching ']', then check if a NAME follows on the same line.
+            brk_depth = 1
+            arr_k = i + 2
+            while arr_k < n and brk_depth > 0:
+                if toks[arr_k].type == _tokenize.OP:
+                    if toks[arr_k].string == "[":
+                        brk_depth += 1
+                    elif toks[arr_k].string == "]":
+                        brk_depth -= 1
+                arr_k += 1
+            # arr_k is now one past ']'; check for trailing NAME on same line
+            if (
+                arr_k < n
+                and toks[arr_k].type == _tokenize.NAME
+                and not _keyword.iskeyword(toks[arr_k].string)
+                and toks[arr_k].start[0] == tok.start[0]
+            ):
+                arr_name_tok = toks[arr_k]
+                arrm_start = _abs_start(tok, offsets)
+                arrm_end = _abs_end(arr_name_tok, offsets)
+                ph = _placeholder(tok.string, arr_name_tok.string)
+                edits.append(_Edit(arrm_start, arrm_end, ph, src[arrm_start:arrm_end]))
+                i = arr_k + 1
+                continue
 
         # ---- bare TYPE NAME declaration (struct/union/enum body, no cdef prefix) ----
         # Two adjacent non-keyword NAME tokens on the same source line cannot be valid

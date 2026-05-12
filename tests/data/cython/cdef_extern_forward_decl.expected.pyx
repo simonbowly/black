@@ -5,7 +5,7 @@ cdef extern from "math.h" nogil:
 
 
 cdef extern from "string.h":
-    int strlen(char * s)
+    int strlen(char *s)
 
 
 x = sqrt(4.0) + log(2.0)

@@ -367,6 +367,28 @@ def test_cdef_extern_nogil_formatting() -> None:
     assert _format_fixture("cdef_extern_nogil") == _expected("cdef_extern_nogil")
 
 
+def test_cimport_multiline_formatting() -> None:
+    """Multi-line 'from X cimport (\\n    a, b,\\n)' forms are handled by tracking
+    parenthesis depth in the cimport name-collection loop so the closing ')' is
+    included in the masked span.  Phase 2 Step 32.
+    """
+    assert _format_fixture("cimport_multiline") == _expected("cimport_multiline")
+
+
+def test_ctypedef_c_alias_formatting() -> None:
+    """ctypedef TYPE ALIAS "C-name" and enum body 'VALUE "rename"' aliases absorb
+    the trailing C-name string into the placeholder span.  Phase 2 Step 33.
+    """
+    assert _format_fixture("ctypedef_c_alias") == _expected("ctypedef_c_alias")
+
+
+def test_func_c_name_alias_formatting() -> None:
+    """cdef int foo "C_name"(args) forward declarations absorb the C-name alias
+    string between the function name and the opening '('.  Phase 2 Step 34.
+    """
+    assert _format_fixture("func_c_name_alias") == _expected("func_c_name_alias")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect

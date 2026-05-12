@@ -209,14 +209,29 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 name_parts: list[str] = []
                 last_tok = cimport_tok
                 k = cimport_idx + 1
+                paren_depth = 0
                 while k < n:
                     t = toks[k]
+                    if t.type == _tokenize.OP and t.string == "(":
+                        paren_depth += 1
+                        k += 1
+                        continue
+                    if t.type == _tokenize.OP and t.string == ")":
+                        paren_depth -= 1
+                        last_tok = t
+                        k += 1
+                        if paren_depth == 0:
+                            break
+                        continue
                     if t.type in (
                         _tokenize.NEWLINE,
                         _tokenize.ENDMARKER,
                         _tokenize.COMMENT,
                     ):
-                        break
+                        if paren_depth == 0:
+                            break
+                        k += 1
+                        continue
                     if t.type == _tokenize.NAME:
                         name_parts.append(t.string)
                         last_tok = t
@@ -373,9 +388,21 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 # declaration (no body colon, e.g. inside cdef extern from blocks).
                 pre_func_edits = len(edits)
 
-                # Span 1: keyword … function-name → 'def __cy_...'
+                # Span 1: keyword … function-name [→ C-name alias string] → 'def __cy_...'
                 s1_start = _abs_start(tok, offsets)
                 s1_end = _abs_end(toks[last_hdr_idx], offsets)
+                # Absorb optional C-name alias string between name and '(': foo "bar"(...)
+                maybe_alias = last_hdr_idx + 1
+                while maybe_alias < open_paren_idx and toks[maybe_alias].type in (
+                    _tokenize.NL, _tokenize.INDENT, _tokenize.DEDENT, _tokenize.COMMENT,
+                ):
+                    maybe_alias += 1
+                if (
+                    maybe_alias < open_paren_idx
+                    and toks[maybe_alias].type == _tokenize.STRING
+                    and toks[maybe_alias].start[0] == toks[last_hdr_idx].start[0]
+                ):
+                    s1_end = _abs_end(toks[maybe_alias], offsets)
                 ph1 = _placeholder(*hdr_name_toks)
                 edits.append(_Edit(s1_start, s1_end, f"def {ph1}", src[s1_start:s1_end]))
 
@@ -849,6 +876,20 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             if not saw_colon and last_name_idx >= 0 and len(name_toks) >= 2:
                 span_start = _abs_start(tok, offsets)
                 span_end = _abs_end(toks[last_name_idx], offsets)
+                # Absorb optional C-name alias string: ctypedef long long foo "__int128_t"
+                alias_k = last_name_idx + 1
+                while alias_k < n and toks[alias_k].type in (
+                    _tokenize.NL, _tokenize.INDENT, _tokenize.DEDENT,
+                    _tokenize.COMMENT,
+                ):
+                    alias_k += 1
+                if (
+                    alias_k < n
+                    and toks[alias_k].type == _tokenize.STRING
+                    and toks[alias_k].start[0] == toks[last_name_idx].start[0]
+                ):
+                    span_end = _abs_end(toks[alias_k], offsets)
+                    k = alias_k + 1
                 ph = _placeholder("ctypedef", *name_toks)
                 edits.append(_Edit(span_start, span_end, ph, src[span_start:span_end]))
                 i = k
@@ -1194,6 +1235,27 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
             i += 2
             continue
 
+        # ---- NAME "C-rename" alias (enum value rename, e.g. ONE "1") ----
+        # In Cython enum bodies, 'ONE "1"' renames the C constant.  NAME STRING (same
+        # line, not immediately adjacent) is not valid Python, so mask the pair.
+        if (
+            tok.type == _tokenize.NAME
+            and not _keyword.iskeyword(tok.string)
+            and tok.string not in _bare_excl
+            and i + 1 < n
+            and toks[i + 1].type == _tokenize.STRING
+            and toks[i + 1].start[0] == tok.start[0]
+            and toks[i + 1].start != (tok.start[0], tok.end[1])  # not immediately adjacent
+        ):
+            str_tok = toks[i + 1]
+            raw_content = str_tok.string.strip("'\"")
+            ph = _placeholder("rename", tok.string, raw_content)
+            r_start = _abs_start(tok, offsets)
+            r_end = _abs_end(str_tok, offsets)
+            edits.append(_Edit(r_start, r_end, ph, src[r_start:r_end]))
+            i += 2
+            continue
+
         # ---- bare TYPE NAME declaration (struct/union/enum body, no cdef prefix) ----
         # Two adjacent non-keyword NAME tokens on the same source line cannot be valid
         # Python — they must be a Cython bare type declaration (struct/enum body).
@@ -1227,6 +1289,42 @@ def mask_cython(src: str) -> tuple[str, list[Replacement]]:
                 k += 1
             sp_start = _abs_start(tok, offsets)
             sp_end = _abs_end(toks[bare_last_k], offsets)
+            # Absorb optional C-name alias string: e.g. int foo "bar"(...)
+            if (
+                k < n
+                and toks[k].type == _tokenize.STRING
+                and toks[k].start[0] == src_line
+            ):
+                sp_end = _abs_end(toks[k], offsets)
+                k += 1
+            # If '(' follows on the same line, this is a bare function forward
+            # declaration (allowed in cdef extern from bodies without cdef keyword).
+            # Absorb the whole line — args, C-name alias, except postfix — into one
+            # placeholder so no unparseable fragments remain in the masked output.
+            skip_k = k
+            while skip_k < n and toks[skip_k].type in (
+                _tokenize.NL, _tokenize.INDENT, _tokenize.DEDENT, _tokenize.COMMENT,
+            ):
+                skip_k += 1
+            if (
+                skip_k < n
+                and toks[skip_k].type == _tokenize.OP
+                and toks[skip_k].string == "("
+                and toks[skip_k].start[0] == src_line
+            ):
+                # Extend span to end of line.
+                end_k = skip_k
+                while end_k < n and toks[end_k].type not in (
+                    _tokenize.NEWLINE, _tokenize.ENDMARKER,
+                ):
+                    if toks[end_k].type not in (
+                        _tokenize.NL, _tokenize.INDENT, _tokenize.DEDENT,
+                        _tokenize.COMMENT,
+                    ):
+                        bare_last_k = end_k
+                    end_k += 1
+                sp_end = _abs_end(toks[bare_last_k], offsets)
+                k = end_k
             ph = _placeholder(*bare_toks_list)
             edits.append(_Edit(sp_start, sp_end, ph, src[sp_start:sp_end]))
             i = k

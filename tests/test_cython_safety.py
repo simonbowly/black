@@ -107,6 +107,200 @@ class TestAssertEquivalent:
             assert_equivalent("A: float = 5", "A: int = 5")
 
 
+class TestDocstringIndentNormalisation:
+    """Docstring re-indent passes; content change and plain strings still raise.
+
+    Covers every position where a docstring can appear in Cython source.
+    Each *_indent_normalised test uses 2-space vs 4-space indentation to mirror
+    what Black produces when re-indenting a whole file.
+    Each *_content_change_raises test confirms genuine edits are still caught.
+    """
+
+    def test_method_docstring_indent_normalised(self):
+        a = 'class Foo:\n  def method(self):\n    """\n    A method.\n    """\n    pass\n'
+        b = 'class Foo:\n    def method(self):\n        """\n        A method.\n        """\n        pass\n'
+        assert_equivalent(a, b)
+
+    def test_method_docstring_content_change_raises(self):
+        a = 'class Foo:\n    def method(self):\n        """\n        A method.\n        """\n        pass\n'
+        b = 'class Foo:\n    def method(self):\n        """\n        Different.\n        """\n        pass\n'
+        with pytest.raises(ASTDifference):
+            assert_equivalent(a, b)
+
+    def test_cdef_func_docstring_indent_normalised(self):
+        a = 'cdef int add(int a, int b):\n  """\n  A cdef function.\n  """\n  return a + b\n'
+        b = 'cdef int add(int a, int b):\n    """\n    A cdef function.\n    """\n    return a + b\n'
+        assert_equivalent(a, b)
+
+    def test_cdef_func_docstring_content_change_raises(self):
+        a = 'cdef int add(int a, int b):\n    """\n    A cdef function.\n    """\n    return a + b\n'
+        b = 'cdef int add(int a, int b):\n    """\n    Different.\n    """\n    return a + b\n'
+        with pytest.raises(ASTDifference):
+            assert_equivalent(a, b)
+
+    def test_cpdef_func_docstring_indent_normalised(self):
+        a = 'cpdef int add(int a, int b):\n  """\n  A cpdef function.\n  """\n  return a + b\n'
+        b = 'cpdef int add(int a, int b):\n    """\n    A cpdef function.\n    """\n    return a + b\n'
+        assert_equivalent(a, b)
+
+    def test_cpdef_func_docstring_content_change_raises(self):
+        a = 'cpdef int add(int a, int b):\n    """\n    A cpdef function.\n    """\n    return a + b\n'
+        b = 'cpdef int add(int a, int b):\n    """\n    Different.\n    """\n    return a + b\n'
+        with pytest.raises(ASTDifference):
+            assert_equivalent(a, b)
+
+    def test_cdef_class_docstring_indent_normalised(self):
+        a = 'cdef class Foo:\n  """\n  A cdef class.\n  """\n  pass\n'
+        b = 'cdef class Foo:\n    """\n    A cdef class.\n    """\n    pass\n'
+        assert_equivalent(a, b)
+
+    def test_cdef_class_docstring_content_change_raises(self):
+        a = 'cdef class Foo:\n    """\n    A cdef class.\n    """\n    pass\n'
+        b = 'cdef class Foo:\n    """\n    Different.\n    """\n    pass\n'
+        with pytest.raises(ASTDifference):
+            assert_equivalent(a, b)
+
+    def test_cython_property_docstring_indent_normalised(self):
+        a = (
+            'cdef class Foo:\n'
+            '  property bar:\n'
+            '    """\n'
+            '    A property.\n'
+            '    """\n'
+            '    def __get__(self):\n'
+            '      return 1\n'
+        )
+        b = (
+            'cdef class Foo:\n'
+            '    property bar:\n'
+            '        """\n'
+            '        A property.\n'
+            '        """\n'
+            '        def __get__(self):\n'
+            '            return 1\n'
+        )
+        assert_equivalent(a, b)
+
+    def test_cython_property_docstring_content_change_raises(self):
+        a = (
+            'cdef class Foo:\n'
+            '    property bar:\n'
+            '        """\n'
+            '        A property.\n'
+            '        """\n'
+            '        def __get__(self):\n'
+            '            return 1\n'
+        )
+        b = (
+            'cdef class Foo:\n'
+            '    property bar:\n'
+            '        """\n'
+            '        Different.\n'
+            '        """\n'
+            '        def __get__(self):\n'
+            '            return 1\n'
+        )
+        with pytest.raises(ASTDifference):
+            assert_equivalent(a, b)
+
+    def test_nested_class_docstring_indent_normalised(self):
+        a = (
+            'class Outer:\n'
+            '  """\n'
+            '  Outer doc.\n'
+            '  """\n'
+            '  class Inner:\n'
+            '    """\n'
+            '    Inner doc.\n'
+            '    """\n'
+            '    pass\n'
+        )
+        b = (
+            'class Outer:\n'
+            '    """\n'
+            '    Outer doc.\n'
+            '    """\n'
+            '    class Inner:\n'
+            '        """\n'
+            '        Inner doc.\n'
+            '        """\n'
+            '        pass\n'
+        )
+        assert_equivalent(a, b)
+
+    def test_nested_class_docstring_content_change_raises(self):
+        a = 'class Outer:\n    """\n    Outer.\n    """\n    pass\n'
+        b = 'class Outer:\n    """\n    Different.\n    """\n    pass\n'
+        with pytest.raises(ASTDifference):
+            assert_equivalent(a, b)
+
+    def test_python_property_docstring_indent_normalised(self):
+        a = (
+            'class Foo:\n'
+            '  @property\n'
+            '  def myprop(self):\n'
+            '    """\n'
+            '    A property.\n'
+            '    """\n'
+            '    return 1\n'
+        )
+        b = (
+            'class Foo:\n'
+            '    @property\n'
+            '    def myprop(self):\n'
+            '        """\n'
+            '        A property.\n'
+            '        """\n'
+            '        return 1\n'
+        )
+        assert_equivalent(a, b)
+
+    def test_python_property_docstring_content_change_raises(self):
+        a = (
+            'class Foo:\n'
+            '    @property\n'
+            '    def myprop(self):\n'
+            '        """\n'
+            '        A property.\n'
+            '        """\n'
+            '        return 1\n'
+        )
+        b = (
+            'class Foo:\n'
+            '    @property\n'
+            '    def myprop(self):\n'
+            '        """\n'
+            '        Different.\n'
+            '        """\n'
+            '        return 1\n'
+        )
+        with pytest.raises(ASTDifference):
+            assert_equivalent(a, b)
+
+    def test_string_literal_in_class_body_not_normalised(self):
+        # A plain string assignment inside a class is not a docstring and
+        # must be compared byte-for-byte.
+        with pytest.raises(ASTDifference):
+            assert_equivalent(
+                'class Foo:\n  x = "  hello  "\n',
+                'class Foo:\n  x = "    hello    "\n',
+            )
+
+    def test_string_literal_in_method_body_not_normalised(self):
+        with pytest.raises(ASTDifference):
+            assert_equivalent(
+                'def foo():\n  x = "  hello  "\n',
+                'def foo():\n  x = "    hello    "\n',
+            )
+
+    def test_string_literal_in_cdef_func_body_not_normalised(self):
+        with pytest.raises(ASTDifference):
+            assert_equivalent(
+                'cdef int foo():\n  x = "  hello  "\n  return 0\n',
+                'cdef int foo():\n  x = "    hello    "\n  return 0\n',
+            )
+
+
 class TestAssertEquivalentIncludes:
 
     def test_same_include_passes(self):

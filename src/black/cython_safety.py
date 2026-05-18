@@ -297,7 +297,8 @@ def _leaf_equal(v1: object, v2: object) -> bool:
 
 
 def _normalise_docstring(docstring: str) -> str:
-    return inspect.cleandoc(docstring)
+    cleaned = inspect.cleandoc(docstring)
+    return "\n".join(line.rstrip() for line in cleaned.splitlines())
 
 
 def _normalise_imported_names(v1):

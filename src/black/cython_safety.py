@@ -16,7 +16,7 @@ from itertools import zip_longest
 from Cython.Compiler import Errors
 from Cython.Compiler import PyrexTypes
 from Cython.Compiler import TreeFragment
-from Cython.Compiler.ExprNodes import NameNode, ProxyNode
+from Cython.Compiler.ExprNodes import NameNode, ProxyNode, UnicodeNode
 from Cython.Compiler.Nodes import Node, FromCImportStatNode, FromImportStatNode
 from Cython.Compiler.Scanning import StringSourceDescriptor
 from Cython.Compiler.Symtab import Scope
@@ -361,6 +361,15 @@ def compare_nodes(n1: Node, n2: Node) -> None:
 
         try:
             if key == "doc" and isinstance(v1, str) and isinstance(v2, str):
+                v1 = _normalise_docstring(v1)
+                v2 = _normalise_docstring(v2)
+
+            if (
+                key in ("value", "constant_result")
+                and node_type is UnicodeNode
+                and isinstance(v1, str)
+                and isinstance(v2, str)
+            ):
                 v1 = _normalise_docstring(v1)
                 v2 = _normalise_docstring(v2)
 

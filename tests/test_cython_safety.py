@@ -68,6 +68,11 @@ class TestAssertEquivalent:
         with pytest.raises(ASTDifference):
             assert_equivalent(a, b)
 
+    def test_string_literal_content_change_raises(self):
+        # Normalisation must not apply to regular string literals, only docstrings.
+        with pytest.raises(ASTDifference):
+            assert_equivalent('x = "  hello  "\n', 'x = "    hello    "\n')
+
     def test_error_message_contains_diff(self):
         with pytest.raises(ASTDifference, match=r"(?i)(source|differ)"):
             assert_equivalent("x = 1\n", "y = 1\n")

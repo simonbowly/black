@@ -332,7 +332,7 @@ def _normalise_proxy_node_constant_result(v1):
     return None
 
 
-def compare_nodes(n1: Node, n2: Node) -> None:
+def compare_nodes(n1: Node, n2: Node, *, parent_attr: object = None) -> None:
     if type(n1) is not type(n2):
         raise _NodeMismatch(
             n1, n2,
@@ -367,6 +367,7 @@ def compare_nodes(n1: Node, n2: Node) -> None:
             if (
                 key in ("value", "constant_result")
                 and node_type is UnicodeNode
+                and parent_attr == "doc"
                 and isinstance(v1, str)
                 and isinstance(v2, str)
             ):
@@ -437,7 +438,8 @@ def assert_equivalent(src: str, dst: str) -> None:
                 f"({longer} tree has extra nodes)."
             )
         try:
-            compare_nodes(n1, n2)
+            last_str = next((p for p in reversed(path1) if isinstance(p, str)), None)
+            compare_nodes(n1, n2, parent_attr=last_str)
         except _NodeMismatch as exc:
             raise ASTDifference(_format_mismatch(src, dst, exc)) from exc
         except _NodeCompareFailed as exc:

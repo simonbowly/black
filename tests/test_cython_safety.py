@@ -277,6 +277,13 @@ class TestDocstringIndentNormalisation:
         with pytest.raises(ASTDifference):
             assert_equivalent(a, b)
 
+    def test_docstring_trailing_space_normalised(self):
+        # Black strips trailing whitespace inside docstring text; the safety
+        # check must not reject that as a content change.
+        a = 'def func(*args):\n    """Return a thing """\n    return\n'
+        b = 'def func(*args):\n    """Return a thing"""\n    return\n'
+        assert_equivalent(a, b)
+
     def test_string_literal_in_class_body_not_normalised(self):
         # A plain string assignment inside a class is not a docstring and
         # must be compared byte-for-byte.

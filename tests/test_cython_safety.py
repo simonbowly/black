@@ -55,6 +55,19 @@ class TestAssertEquivalent:
         b = 'def foo():\n    """Hello.\n\n        World.\n        """\n    pass\n'
         assert_equivalent(a, b)
 
+    def test_class_docstring_indent_normalised(self):
+        # Black re-indents a class with 2-space indentation to 4-space, which
+        # changes the raw string content of the docstring UnicodeNode.
+        a = 'class Foo:\n  """\n  Body.\n  """\n  pass\n'
+        b = 'class Foo:\n    """\n    Body.\n    """\n    pass\n'
+        assert_equivalent(a, b)
+
+    def test_class_docstring_content_change_raises(self):
+        a = 'class Foo:\n    """\n    Body.\n    """\n    pass\n'
+        b = 'class Foo:\n    """\n    Different body.\n    """\n    pass\n'
+        with pytest.raises(ASTDifference):
+            assert_equivalent(a, b)
+
     def test_error_message_contains_diff(self):
         with pytest.raises(ASTDifference, match=r"(?i)(source|differ)"):
             assert_equivalent("x = 1\n", "y = 1\n")

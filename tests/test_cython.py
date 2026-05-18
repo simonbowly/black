@@ -415,6 +415,16 @@ def test_func_c_name_alias_formatting() -> None:
     assert _format_fixture("func_c_name_alias") == _expected("func_c_name_alias")
 
 
+def test_class_docstring_reindent_formatting() -> None:
+    """A class with 2-space indentation has its docstring re-indented by Black.
+
+    The raw docstring content changes (2 vs 4 spaces), so the Cython safety
+    check must compare docstrings after inspect.cleandoc normalisation rather
+    than byte-for-byte.  Without the fix this raises ASTDifference.
+    """
+    assert _format_fixture("class_docstring") == _expected("class_docstring")
+
+
 def test_unmask_cython_handles_black_wrapped_import() -> None:
     """When a masked 'from X import __cy_cimport_...' line exceeds 88 chars,
     Black wraps it as 'import (\\n    __cy_...,\\n)'.  The unmasker must detect
